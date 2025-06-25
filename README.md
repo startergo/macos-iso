@@ -2,28 +2,75 @@
 
 This repository provides automated workflows to create bootable macOS installers for virtualization. Choose the appropriate workflow based on your target macOS version:
 
-| macOS Version | Workflow | Method | Output |
-|---------------|----------|--------|--------|
-| **10.9-10.12** | **Unified ASR VM Installer** | ASR Restore | DMG + ISO (VM-optimized) |
-| **10.13+** | **Download** | Apple Software Update | ISO (minimal size) |
-| **10.7-10.8** | **Enhanced Legacy macOS Download** | Direct InstallESD conversion | ISO (enhanced bootable) |
-
-Steps from: https://osxdaily.com/2020/12/14/how-create-macos-big-sur-iso/
+| macOS Version    | Workflow                        | Method                    | Output                        |
+|-----------------|----------------------------------|---------------------------|-------------------------------|
+| **10.7-10.8**   | **Enhanced Legacy macOS Download** | Direct InstallESD conversion | DMG + ISO (enhanced bootable) |
+| **10.9-10.12**  | **Unified ASR VM Installer**     | ASR Restore               | DMG + ISO (VM-optimized)      |
+| **10.13+**      | **Download**                     | Apple Software Update     | ISO (minimal size)            |
 
 ## Setup
 
 1. **Fork this repository** to your own GitHub account
 2. The workflow will automatically push ISO files to your forked repository's container registry
 
+<details>
+<summary><strong>Requirements for Mavericks (10.9) Recovery Workflow</strong></summary>
+
+To use the Mavericks (10.9) Recovery API workflow, you must extract secrets from a Mac that originally shipped from Apple with OS X Mavericks preinstalled. Only Macs with factory Mavericks installations will have valid secrets for this process.
+
+**Supported Macs and Board IDs:**
+
+| Model                                      | Board ID                  |
+|---------------------------------------------|---------------------------|
+| MacBook Air (11-inch, Mid 2013/Early 2014)  | Mac-35C1E88140C3E6CF      |
+| MacBook Air (13-inch, Mid 2013/Early 2014)  | Mac-2E6FAB96566FE58C      |
+| MacBook Pro (Retina, 13-inch, Late 2013/14) | Mac-189A3D4F975D5FFC      |
+| MacBook Pro (Retina, 15-inch, Late 2013)    | Mac-F65AE981FFA204ED      |
+| iMac (21.5-inch, Late 2013)                 | Mac-189A3D4F975D5FFC      |
+| iMac (27-inch, Late 2013)                   | Mac-77EB7D7DAF985301      |
+| Mac mini (Late 2014)                        | Mac-7DF21CB3ED6977E5      |
+| Mac Pro (Late 2013)                         | Mac-F60DEB81FF30ACF6      |
+
+**Instructions:**
+- Use one of the above Macs to extract the required secrets (`BOARD_SERIAL` and `ROM`).
+- The `BOARD_ID` is not a secret and must be set directly in the workflow file. If you use a different Mac model, update the `BOARD_ID` value in `.github/workflows/unified-asr.yml` to match your hardware's Board ID.
+- Add `BOARD_SERIAL` and `ROM` as GitHub Actions secrets before running the Mavericks workflow.
+
+</details>
+
 ## Creating an ISO
 
 This repository provides **three optimized workflows** to cover all macOS versions:
 
-1. **Unified ASR VM Installer (10.9-10.12)** - Recommended for all versions 10.9-10.12
-2. **Download (10.13+)** - For modern macOS versions  
-3. **Enhanced Legacy macOS Download (10.7-10.8)** - Enhanced bootable method for oldest versions
+1. **Enhanced Legacy macOS Download (10.7-10.8)** - Enhanced bootable method for oldest versions
+2. **Unified ASR VM Installer (10.9-10.12)** - Recommended for all versions 10.9-10.12
+3. **Download (10.13+)** - For modern macOS versions  
 
-### Unified ASR Workflow (10.9-10.12) - **Recommended**
+### Legacy macOS (10.7-10.8) - **Enhanced Bootable Method**
+1. Go to the **Actions** tab in your forked repository
+2. Click on the **Enhanced Legacy macOS Download (10.7-10.8)** workflow
+3. Click **Run workflow**
+4. Select from the dropdown menu:
+   - `10.8 Mountain Lion`
+   - `10.7 Lion`
+5. The enhanced workflow will:
+   - Download the official Apple DMG
+   - Extract the InstallESD.dmg directly (preserving boot structure) 
+   - Create a properly bootable ISO using UDTO format
+   - Verify the ISO contains essential boot files (boot.efi, BaseSystem.dmg)
+6. Enhanced ISOs are tagged with descriptive names (e.g., `10.8-mountain-lion`, `10.7-lion`)
+
+**Enhanced Benefits:**
+- **Direct InstallESD conversion**: Preserves original Apple boot structure
+- **VM-optimized**: Tested and verified in Parallels ✅
+- **Proper boot files**: Includes boot.efi and BaseSystem.dmg for reliable booting
+- **UDTO format**: Optimized for VM platform compatibility
+
+**Note**: Legacy installers often have expired certificates. The workflow automatically strips code signatures and bypasses certificate validation to ensure compatibility.
+
+**Note**: If an ISO with the same version already exists in your registry, it will be **overwritten** with the new one.
+
+### Unified ASR Workflow (10.9-10.12)
 
 The **Unified ASR VM Installer** workflow provides a single, consistent method for creating macOS 10.9-10.12 installers using the proven ASR (Apple Software Restore) method:
 
@@ -50,6 +97,8 @@ The **Unified ASR VM Installer** workflow provides a single, consistent method f
 
 ### Modern macOS (10.13+)
 
+> **Reference:** Steps adapted from [OSXDaily: How to Create a MacOS Big Sur ISO File](https://osxdaily.com/2020/12/14/how-create-macos-big-sur-iso/)
+
 1. Go to the **Actions** tab in your forked repository
 2. Click on the **Download** workflow
 3. Click **Run workflow**
@@ -60,41 +109,20 @@ The **Unified ASR VM Installer** workflow provides a single, consistent method f
 6. The workflow will validate your input and automatically resolve it to the correct version-build combination
 7. The ISO will be automatically created, optimized for minimal size, and pushed to your GitHub Container Registry
 
-### Legacy macOS (10.7-10.8) - **Enhanced Bootable Method**
-1. Go to the **Actions** tab in your forked repository
-2. Click on the **Enhanced Legacy macOS Download (10.7-10.8)** workflow
-3. Click **Run workflow**
-4. Select from the dropdown menu:
-   - `10.8 Mountain Lion`
-   - `10.7 Lion`
-5. The enhanced workflow will:
-   - Download the official Apple DMG
-   - Extract the InstallESD.dmg directly (preserving boot structure) 
-   - Create a properly bootable ISO using UDTO format
-   - Verify the ISO contains essential boot files (boot.efi, BaseSystem.dmg)
-6. Enhanced ISOs are tagged with descriptive names (e.g., `10.8-mountain-lion`, `10.7-lion`)
-
-**Enhanced Benefits:**
-- **Direct InstallESD conversion**: Preserves original Apple boot structure
-- **VM-optimized**: Tested and verified in Parallels ✅
-- **Proper boot files**: Includes boot.efi and BaseSystem.dmg for reliable booting
-- **UDTO format**: Optimized for VM platform compatibility
-
-**Note**: Legacy installers often have expired certificates. The workflow automatically strips code signatures and bypasses certificate validation to ensure compatibility.
-
-**Note**: If an ISO with the same version already exists in your registry, it will be **overwritten** with the new one.
-
 ## Technical Details
 
 ## Supported Input Formats
 
-### Modern macOS (Download workflow):
+### Enhanced Legacy macOS (10.7-10.8):
+- **Dropdown selection only**: Choose from predefined options in the workflow interface
+
+### Unified ASR Workflow (10.9-10.12):
+- **Dropdown selection only**: Choose from predefined options in the workflow interface
+
+### Modern macOS (10.13+):
 - **Exact version-build**: `10.15.7-19H2`, `11.7.6-20G1231` (always works)
 - **Version-only**: `10.13.6`, `12.4` (works when only one build exists for that version)
 - **Invalid examples**: `10.15.7` (when multiple builds like 19H2, 19H15 exist - you must specify the build)
-
-### Legacy macOS (Legacy Download workflow):
-- **Dropdown selection only**: Choose from predefined options in the workflow interface
 
 ## Downloading an existing ISO
 
@@ -142,7 +170,9 @@ oras manifest fetch ghcr.io/YOUR_USERNAME/macos-iso:11.7.6
 ### Direct URL:
 You can also browse directly at: `https://github.com/YOUR_USERNAME?tab=packages&repo_name=macos-iso`
 
-## Available macOS installers:
+<details>
+<summary><strong>Available macOS installers</strong></summary>
+
 Finding available software
 Software Update found the following full installers:
 * Title: macOS Sequoia, Version: 15.5, Size: 15283299KiB, Build: 24F74, Deferred: NO
@@ -171,25 +201,43 @@ Software Update found the following full installers:
 * Title: macOS Mojave, Version: 10.14.4, Size: 5894794KiB, Build: 18E2034, Deferred: NO
 * Title: macOS High Sierra, Version: 10.13.6, Size: 5099306KiB, Build: 17G66, Deferred: NO
 
+</details>
+
 ## Troubleshooting
 
-### Unified ASR Workflow (10.9-10.12)
+<details>
+<summary><strong>Unified ASR Workflow (10.9-10.12)</strong></summary>
+
 The unified ASR workflow resolves common issues:
 - **Duplicate Mounts**: Prevents `/Volumes/OS X Base System 1` style duplicates
 - **Resource Busy Errors**: Enhanced unmount logic with process cleanup
 - **Workflow Failures**: Robust verification prevents "disk busy" termination
 
-### Enhanced Legacy macOS (10.7-10.8)
+</details>
+
+<details>
+<summary><strong>Enhanced Legacy macOS (10.7-10.8)</strong></summary>
+
 - **Enhanced Bootability**: New method preserves original InstallESD.dmg boot structure
 - **VM Compatibility**: Tested and verified in Parallels ✅
 - **Boot File Verification**: Automatically checks for boot.efi and BaseSystem.dmg
 - **UDTO Format**: Optimized conversion format for better VM compatibility
 
-### Modern macOS (10.13+)
+</details>
+
+<details>
+<summary><strong>Modern macOS (10.13+)</strong></summary>
+
 - **Version Not Found**: Use exact version-build format (`10.15.7-19H2` not `10.15.7`)
 - **Download Failures**: Workflow includes automatic retry logic
 
-### General Tips
+</details>
+
+<details>
+<summary><strong>General Tips</strong></summary>
+
 - **Patience**: Legacy ISOs take 20-30 minutes due to complex extraction
 - **Logs**: Check detailed workflow logs for troubleshooting
 - **Storage**: Ensure sufficient space (4-15GB per ISO)
+
+</details>
