@@ -1,0 +1,255 @@
+name: Download
+on:
+  workflow_dispatch:
+    inputs:
+      macos_version:
+        description: 'macOS version to download (e.g., 11.7.10, 12.7.4, or 10.15.7-19H2 for specific builds)'
+        required: false
+        default: ''
+
+jobs:
+  download:
+    runs-on: macos-13
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      available_versions: ${{ steps.list-versions.outputs.versions }}
+    steps:
+      - name: List available installers
+        id: list-versions
+        run: |
+          echo "Available macOS installers:"
+          softwareupdate --list-full-installers | tee versions_output.txt
+          echo ""
+          echo "Available versions listed above ☝️"
+          echo ""
+          echo "For versions with multiple builds (like 10.15.7), use format: VERSION-BUILD"
+          echo "Examples: 10.15.7-19H2, 10.15.7-19H4, 10.15.7-19H15"
+          echo ""
+          
+          # Extract version numbers (include build for duplicates)
+          VERSIONS=$(grep -E "Version: [0-9]+\.[0-9]+(\.[0-9]+)?" versions_output.txt | sed 's/.*Version: \([^,]*\), .*Build: \([^,]*\).*/\1-\2/' | tr '\n' ',' | sed 's/,$//')
+          echo "versions=$VERSIONS" >> $GITHUB_OUTPUT
+          echo "Extracted versions with builds: $VERSIONS"
+
+      - name: Check version input
+        run: |
+          AVAILABLE_VERSIONS="${{ steps.list-versions.outputs.versions }}"
+          USER_VERSION="${{ github.event.inputs.macos_version }}"
+          
+          if [ -z "$USER_VERSION" ]; then
+            echo "❌ No macOS version specified."
+            echo "Please re-run this workflow and enter one of these available versions:"
+            echo "$AVAILABLE_VERSIONS" | tr ',' '\n' | sed 's/^/  - /'
+            echo ""
+            echo "Copy and paste one of the version numbers above into the workflow input field."
+            exit 1
+          fi
+          
+          # Check if the exact version-build format is available
+          if [[ ",$AVAILABLE_VERSIONS," == *",$USER_VERSION,"* ]]; then
+            echo "✅ Exact match found for version: $USER_VERSION"
+            echo "RESOLVED_VERSION=$USER_VERSION" >> $GITHUB_ENV
+          else
+            # Check if user provided just a version number (e.g., 10.13.6)
+            # and if there's only one build available for that version
+            if [[ "$USER_VERSION" != *"-"* ]]; then
+              echo "Checking for single build match for version: $USER_VERSION"
+              
+              # Find all builds for this version
+              MATCHING_BUILDS=$(echo "$AVAILABLE_VERSIONS" | tr ',' '\n' | grep "^$USER_VERSION-" || true)
+              
+              if [ -n "$MATCHING_BUILDS" ]; then
+                BUILD_COUNT=$(echo "$MATCHING_BUILDS" | wc -l | tr -d ' ')
+                
+                if [ "$BUILD_COUNT" -eq 1 ]; then
+                  RESOLVED_VERSION="$MATCHING_BUILDS"
+                  echo "✅ Single build found for version $USER_VERSION: $RESOLVED_VERSION"
+                  echo "RESOLVED_VERSION=$RESOLVED_VERSION" >> $GITHUB_ENV
+                else
+                  echo "❌ Multiple builds available for version '$USER_VERSION':"
+                  echo "$MATCHING_BUILDS" | sed 's/^/  - /'
+                  echo ""
+                  echo "Please specify the exact version-build (e.g., $USER_VERSION-BUILD_NUMBER)."
+                  exit 1
+                fi
+              else
+                echo "❌ Version '$USER_VERSION' is not available."
+                echo "Available versions are:"
+                echo "$AVAILABLE_VERSIONS" | tr ',' '\n' | sed 's/^/  - /'
+                echo ""
+                echo "Please re-run this workflow with one of the available versions listed above."
+                exit 1
+              fi
+            else
+              echo "❌ Version '$USER_VERSION' is not available."
+              echo "Available versions are:"
+              echo "$AVAILABLE_VERSIONS" | tr ',' '\n' | sed 's/^/  - /'
+              echo ""
+              echo "Please re-run this workflow with one of the available versions listed above."
+              exit 1
+            fi
+          fi
+          
+          echo "✅ Proceeding with resolved version: ${RESOLVED_VERSION:-$USER_VERSION}"
+          
+          # Ensure RESOLVED_VERSION is set for the rest of the workflow
+          if [ -z "$RESOLVED_VERSION" ]; then
+            echo "RESOLVED_VERSION=$USER_VERSION" >> $GITHUB_ENV
+            echo "Using user input as resolved version: $USER_VERSION"
+          fi
+
+      - name: Download installer
+        run: |
+          # Use the validated and resolved version
+          VERSION_TO_USE="${RESOLVED_VERSION}"
+          echo "🔽 Downloading macOS installer for validated version: $VERSION_TO_USE"
+          
+          # Extract just the version number (before the build number)
+          VERSION_NUMBER=$(echo "$VERSION_TO_USE" | cut -d'-' -f1)
+          BUILD_NUMBER=$(echo "$VERSION_TO_USE" | cut -d'-' -f2)
+          
+          echo "Version: $VERSION_NUMBER, Build: $BUILD_NUMBER"
+          
+          # Download the installer using the version number
+          echo "Running: softwareupdate --download --fetch-full-installer --full-installer-version \"$VERSION_NUMBER\""
+          softwareupdate --download --fetch-full-installer --full-installer-version "$VERSION_NUMBER"
+
+      - name: Create disk
+        run: |
+          # Find the downloaded installer app
+          INSTALLER_APP=$(find /Applications -name "Install macOS*.app" -type d | head -n 1)
+          
+          if [ -z "$INSTALLER_APP" ]; then
+            echo "Error: No macOS installer found in /Applications"
+            exit 1
+          fi
+          
+          echo "Found installer: $INSTALLER_APP"
+          
+          # Calculate the size of the installer app in MB
+          INSTALLER_SIZE_BYTES=$(du -s "$INSTALLER_APP" | cut -f1)
+          # Convert from 512-byte blocks to MB and add 20% overhead + 1GB buffer
+          INSTALLER_SIZE_MB=$((INSTALLER_SIZE_BYTES / 2048))
+          OVERHEAD_MB=$((INSTALLER_SIZE_MB * 20 / 100))
+          BUFFER_MB=1024
+          TOTAL_SIZE_MB=$((INSTALLER_SIZE_MB + OVERHEAD_MB + BUFFER_MB))
+          
+          echo "Installer size: ${INSTALLER_SIZE_MB}MB"
+          echo "Overhead (20%): ${OVERHEAD_MB}MB" 
+          echo "Buffer: ${BUFFER_MB}MB"
+          echo "Total disk size needed: ${TOTAL_SIZE_MB}MB"
+          
+          # Create the disk with calculated size
+          hdiutil create -o /tmp/macOS -size ${TOTAL_SIZE_MB}m -volname macOS -layout SPUD -fs HFS+J
+          hdiutil attach /tmp/macOS.dmg -noverify -mountpoint /Volumes/macOS
+
+      - name: createinstallmedia
+        run: |
+          INSTALLER_APP=$(find /Applications -name "Install macOS*.app" -type d | head -n 1)
+          sudo "$INSTALLER_APP/Contents/Resources/createinstallmedia" --volume /Volumes/macOS --nointeraction
+
+      - name: Detach disk
+        run: |
+          # Find and detach the install media volume
+          echo "Current mounted volumes:"
+          mount | grep -E "/Volumes/"
+          echo ""
+          
+          # Look for install volumes using a more robust approach
+          INSTALL_VOLUMES=$(mount | grep -E "/Volumes/Install" | sed 's/.* on \(\/Volumes\/[^(]*\).*/\1/' | sed 's/ *$//')
+          
+          if [ -n "$INSTALL_VOLUMES" ]; then
+            echo "Found install volumes to detach:"
+            echo "$INSTALL_VOLUMES"
+            echo ""
+            
+            while IFS= read -r vol; do
+              if [ -n "$vol" ] && [ -d "$vol" ]; then
+                echo "Detaching volume: '$vol'"
+                hdiutil detach -force "$vol" || echo "Failed to detach '$vol', continuing..."
+              else
+                echo "Volume '$vol' does not exist, skipping..."
+              fi
+            done <<< "$INSTALL_VOLUMES"
+          else
+            echo "No install volumes found to detach."
+            echo "Looking for any macOS-related volumes..."
+            
+            # Fallback: look for any volume containing "macOS"
+            MACOS_VOLUMES=$(mount | grep -i macos | sed 's/.* on \(\/Volumes\/[^(]*\).*/\1/' | sed 's/ *$//')
+            if [ -n "$MACOS_VOLUMES" ]; then
+              echo "Found macOS volumes:"
+              echo "$MACOS_VOLUMES"
+              while IFS= read -r vol; do
+                if [ -n "$vol" ] && [ -d "$vol" ]; then
+                  echo "Detaching volume: '$vol'"
+                  hdiutil detach -force "$vol" || echo "Failed to detach '$vol', continuing..."
+                fi
+              done <<< "$MACOS_VOLUMES"
+            else
+              echo "No macOS volumes found. This might be normal if volumes were already detached."
+            fi
+          fi
+          
+          # Also check for and detach our temporary macOS volume
+          if [ -d "/Volumes/macOS" ]; then
+            echo "Detaching temporary macOS volume..."
+            hdiutil detach -force "/Volumes/macOS" || echo "Failed to detach /Volumes/macOS, continuing..."
+          fi
+          
+          echo "Detach process completed."
+
+      - name: Compact DMG
+        run: |
+          # Wait a moment for volumes to fully detach
+          sleep 2
+          
+          echo "Original DMG size:"
+          ls -lh /tmp/macOS.dmg
+          
+          echo "Compacting DMG to minimum size..."
+          # Resize the DMG to its minimum possible size
+          hdiutil resize -size min /tmp/macOS.dmg
+          
+          echo "Compacted DMG size:"
+          ls -lh /tmp/macOS.dmg
+          
+          # Calculate space saved
+          echo "DMG has been compacted to minimum size, removing all unused space."
+
+      - name: Convert to ISO
+        run: |
+           # Check if the DMG file exists and is accessible
+           if [ ! -f "/tmp/macOS.dmg" ]; then
+             echo "Error: /tmp/macOS.dmg not found!"
+             exit 1
+           fi
+           
+           echo "Converting compacted DMG to ISO..."
+           hdiutil convert /tmp/macOS.dmg -format UDTO -o ~/Desktop/macOS.cdr
+           mv ~/Desktop/macOS.cdr macOS-${RESOLVED_VERSION}.iso
+           
+           echo "Final ISO size:"
+           ls -lh macOS-${RESOLVED_VERSION}.iso
+           
+           rm -Rf /tmp/macOS.dmg
+
+      - name: Push to GHCR
+        run: |
+          echo "Installing oras..."
+          brew install oras || true
+          
+          echo "Logging into GHCR..."
+          echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io --username ${{ github.actor }} --password-stdin
+          
+          echo "Checking ISO file..."
+          ls -la macOS-${RESOLVED_VERSION}.iso
+          
+          echo "Pushing to GHCR..."
+          oras push ghcr.io/${{ github.repository }}:${RESOLVED_VERSION} \
+            --artifact-type application/vnd.acme.rocket.config \
+            ./macOS-${RESOLVED_VERSION}.iso
+          
+          echo "Successfully pushed macOS-${RESOLVED_VERSION}.iso to ghcr.io/${{ github.repository }}:${RESOLVED_VERSION}"

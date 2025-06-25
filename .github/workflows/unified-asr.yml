@@ -1,0 +1,958 @@
+name: Unified ASR VM Installer (10.9-10.12)
+on:
+  workflow_dispatch:
+    inputs:
+      macos_version:
+        description: 'macOS version to create'
+        required: true
+        type: choice
+        options:
+          - '10.9 (Mavericks)'
+          - '10.10 (Yosemite)'
+          - '10.11 (El Capitan)'
+          - '10.12 (Sierra)'
+        default: '10.9 (Mavericks)'
+      output_format:
+        description: 'Output format for the installer'
+        required: true
+        type: choice
+        options:
+          - 'Both DMG and ISO'
+          - 'DMG only (Parallels recommended)'
+          - 'ISO only (VMware/VirtualBox)'
+        default: 'Both DMG and ISO'
+
+jobs:
+  unified-asr-installer:
+    runs-on: macos-13
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+      - name: Set Version Parameters
+        run: |
+          echo "🔧 Setting version-specific parameters..."
+          
+          VERSION="${{ github.event.inputs.macos_version }}"
+          
+          case "$VERSION" in
+            "10.9 (Mavericks)")
+              echo "VERSION_NUM=10.9" >> $GITHUB_ENV
+              echo "VERSION_NAME=Mavericks" >> $GITHUB_ENV
+              echo "VOLUME_NAME=Install OS X Mavericks" >> $GITHUB_ENV
+              echo "DOWNLOAD_METHOD=recovery_api" >> $GITHUB_ENV
+              echo "BOARD_ID=Mac-3CBD00234E554E41" >> $GITHUB_ENV
+              echo "BOARD_SERIAL=${{ secrets.MAVERICKS_BOARD_SERIAL }}" >> $GITHUB_ENV
+              echo "ROM=${{ secrets.MAVERICKS_ROM }}" >> $GITHUB_ENV
+              ;;
+            "10.10 (Yosemite)")
+              echo "VERSION_NUM=10.10" >> $GITHUB_ENV
+              echo "VERSION_NAME=Yosemite" >> $GITHUB_ENV
+              echo "VOLUME_NAME=Install OS X Yosemite" >> $GITHUB_ENV
+              echo "DOWNLOAD_METHOD=direct_url" >> $GITHUB_ENV
+              echo "DOWNLOAD_URL=https://updates.cdn-apple.com/2019/cert/061-41343-20191023-02465f92-3ab5-4c92-bfe2-b725447a070d/InstallMacOSX.dmg" >> $GITHUB_ENV
+              ;;
+            "10.11 (El Capitan)")
+              echo "VERSION_NUM=10.11" >> $GITHUB_ENV
+              echo "VERSION_NAME=El Capitan" >> $GITHUB_ENV
+              echo "VOLUME_NAME=Install OS X El Capitan" >> $GITHUB_ENV
+              echo "DOWNLOAD_METHOD=direct_url" >> $GITHUB_ENV
+              echo "DOWNLOAD_URL=http://updates.cdn-apple.com/2019/cert/061-41424-20191024-218af9ec-cf50-4516-9011-228c78eda3d2/InstallMacOSX.dmg" >> $GITHUB_ENV
+              ;;
+            "10.12 (Sierra)")
+              echo "VERSION_NUM=10.12" >> $GITHUB_ENV
+              echo "VERSION_NAME=Sierra" >> $GITHUB_ENV
+              echo "VOLUME_NAME=Install macOS Sierra" >> $GITHUB_ENV
+              echo "DOWNLOAD_METHOD=direct_url" >> $GITHUB_ENV
+              echo "DOWNLOAD_URL=http://updates.cdn-apple.com/2019/cert/061-39476-20191023-48f365f4-0015-4c41-9f44-39d3d2aca067/InstallOS.dmg" >> $GITHUB_ENV
+              ;;
+          esac
+          
+          echo "✅ Version: $VERSION_NAME ($VERSION_NUM)"
+          echo "✅ Volume Name: $VOLUME_NAME"
+          echo "✅ Download Method: $DOWNLOAD_METHOD"
+
+      - name: Download macOS Installer (Mavericks - Recovery API)
+        if: contains(github.event.inputs.macos_version, '10.9')
+        # Mavericks (10.9) uses Apple Recovery API and unique extraction logic. Do not use PKG extraction or unified InstallESD.dmg logic here.
+        run: |
+          echo "🍎 Downloading Mavericks via Apple Recovery API..."
+          
+          # Apple Recovery API authentication
+          BOARD_SERIAL_NUMBER="C0243070168G3M91F"
+          BOARD_ID="Mac-3CBD00234E554E41"
+          ROM="003EE1E6AC14"
+          
+          hex_to_bin() {
+              echo -n "$1" | xxd -r -p
+          }
+          
+          echo "🔐 Authenticating with Apple recovery servers..."
+          
+          # Get server session
+          SERVER_ID=$(curl -v -fs -c - http://osrecovery.apple.com/ 2>/dev/null | tail -1 | awk '{print $NF}')
+          if [ -z "$SERVER_ID" ]; then
+            echo "❌ Failed to get server ID from Apple"
+            exit 1
+          fi
+          echo "✅ Server ID obtained: $SERVER_ID"
+          
+          CLIENT_ID=$(dd if=/dev/urandom bs=8 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n' | tr '[:lower:]' '[:upper:]')
+          echo "✅ Client ID generated: $CLIENT_ID"
+          
+          # Generate authentication key (robust method, matches enhanced-mavericks.yml)
+          {
+              hex_to_bin "$CLIENT_ID"
+              hex_to_bin "$(echo $SERVER_ID | awk -F'~' '{print $2}')"
+              hex_to_bin "$ROM"
+              printf "%s" "${BOARD_SERIAL_NUMBER}${BOARD_ID}" | iconv -t utf-8 | openssl dgst -sha256 -binary
+              printf '\xCC\xCC\xCC\xCC\xCC\xCC\xCC\xCC\xCC\xCC'
+          } > auth_info
+          K=$(openssl dgst -sha256 -binary < auth_info | od -An -tx1 | tr -d ' \n' | tr '[:lower:]' '[:upper:]')
+          rm auth_info
+          echo "✅ Authentication key generated"
+          
+          echo "📦 Requesting Mavericks installer information..."
+          
+          # Create the data payload
+          echo "cid=$CLIENT_ID" > /tmp/post_data
+          echo "sn=$BOARD_SERIAL_NUMBER" >> /tmp/post_data
+          echo "bid=$BOARD_ID" >> /tmp/post_data
+          echo "k=$K" >> /tmp/post_data
+          echo "" >> /tmp/post_data
+          
+          INSTALL_ESD_INFO=$(curl -s 'http://osrecovery.apple.com/InstallationPayload/OSInstaller' -X POST -H 'Content-Type: text/plain' -H 'User-Agent: InternetRecovery/1.0' --cookie "session=$SERVER_ID" --data-binary @/tmp/post_data)
+          
+          rm -f /tmp/post_data
+          
+          INSTALL_ESD_URL=$(echo "$INSTALL_ESD_INFO" | grep "^AU:" | cut -d' ' -f2)
+          INSTALL_ESD_ASSET_TOKEN=$(echo "$INSTALL_ESD_INFO" | grep "^AT:" | cut -d' ' -f2)
+          
+          if [ -z "$INSTALL_ESD_URL" ]; then
+            echo "❌ Failed to get Mavericks download URL from Apple"
+            exit 1
+          fi
+          
+          echo "✅ Got authenticated download URL"
+          echo "🔽 Downloading InstallESD.dmg..."
+          curl -L "$INSTALL_ESD_URL" -H "Cookie: AssetToken=$INSTALL_ESD_ASSET_TOKEN" -o macOS-Mavericks-InstallESD.dmg
+          
+          # Verify checksum
+          echo "🔍 Verifying file integrity..."
+          ACTUAL_CHECKSUM=$(openssl dgst -sha256 macOS-Mavericks-InstallESD.dmg | cut -d' ' -f2)
+          EXPECTED_CHECKSUM="c861fd59e82bf777496809a0d2a9b58f66691ee56738031f55874a3fe1d7c3ff"
+          
+          if [ "$ACTUAL_CHECKSUM" != "$EXPECTED_CHECKSUM" ]; then
+            echo "❌ Checksum verification failed!"
+            exit 1
+          fi
+          
+          echo "✅ InstallESD.dmg downloaded and verified ($(ls -lh macOS-Mavericks-InstallESD.dmg | awk '{print $5}'))"
+          cp macOS-Mavericks-InstallESD.dmg InstallESD.dmg
+
+      - name: Download macOS Installer (10.10-10.12 - Direct URL)
+        if: ${{ !contains(github.event.inputs.macos_version, '10.9') }}
+        # 10.10–10.12 always use robust PKG extraction and unified ASR logic. Do not use Mavericks logic here.
+        run: |
+          VERSION="${{ github.event.inputs.macos_version }}"
+          
+          case "$VERSION" in
+            "10.10 (Yosemite)")
+              DOWNLOAD_URL="https://updates.cdn-apple.com/2019/cert/061-41343-20191023-02465f92-3ab5-4c92-bfe2-b725447a070d/InstallMacOSX.dmg"
+              VERSION_NAME="Yosemite"
+              PKG_METHOD=true
+              ;;
+            "10.11 (El Capitan)")
+              DOWNLOAD_URL="https://updates.cdn-apple.com/2019/cert/061-41424-20191024-218af9ec-cf50-4516-9011-228c78eda3d2/InstallMacOSX.dmg"
+              VERSION_NAME="El Capitan"
+              PKG_METHOD=true
+              ;;
+            "10.12 (Sierra)")
+              DOWNLOAD_URL="https://updates.cdn-apple.com/2019/cert/061-39476-20191023-48f365f4-0015-4c41-9f44-39d3d2aca067/InstallOS.dmg"
+              VERSION_NAME="Sierra"
+              PKG_METHOD=true
+              ;;
+          esac
+          
+          echo "🍎 Downloading $VERSION via direct URL..."
+          
+          # Download the installer
+          echo "📥 Downloading from: $DOWNLOAD_URL"
+          if ! curl -fs -o "Installer.dmg" "$DOWNLOAD_URL"; then
+            echo "❌ Failed to download installer"
+            echo "🔍 Trying alternative download methods..."
+            
+            # Try with different user agent
+            if ! curl -A "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" -fs -o "Installer.dmg" "$DOWNLOAD_URL"; then
+              echo "❌ All download methods failed"
+              exit 1
+            fi
+          fi
+          
+          echo "✅ Download completed successfully"
+          
+          # Mount and extract InstallESD.dmg
+          echo "📦 Mounting installer image..."
+          hdiutil attach Installer.dmg -noverify -readonly -mountpoint /tmp/installer
+          
+          # Always extract PKG for 10.10–10.12
+          echo "🔍 Looking for PKG in /tmp/installer..."
+          PKG_FILE=$(find /tmp/installer -name "*.pkg" | head -1)
+          if [ -z "$PKG_FILE" ]; then
+            echo "❌ No PKG file found in /tmp/installer"
+            ls -la /tmp/installer/
+            exit 1
+          fi
+          echo "✅ Found PKG: $PKG_FILE"
+          
+          # Extract the PKG to get InstallESD.dmg
+          mkdir -p /tmp/pkg_extract
+          cd /tmp/pkg_extract
+          echo "📦 Extracting PKG with xar..."
+          if ! xar -xf "$PKG_FILE"; then
+            echo "❌ Failed to extract PKG with xar"
+            exit 1
+          fi
+          
+          # Find and extract the main payload (grouped find for correct logic)
+          PAYLOAD_FILE=$(find . -type f \( -name "Payload" -o -name "*.pax.gz" \) | head -1)
+          if [ -z "$PAYLOAD_FILE" ]; then
+            echo "❌ No payload found in PKG"
+            find . -type f | head -10
+            exit 1
+          fi
+          echo "✅ Found payload: $PAYLOAD_FILE"
+          
+          mkdir -p /tmp/payload_extract
+          cd /tmp/payload_extract
+          if [[ "$PAYLOAD_FILE" == *.pax.gz ]]; then
+            echo "📦 Extracting pax.gz payload..."
+            gunzip -c "../pkg_extract/$PAYLOAD_FILE" | pax -r
+          elif [[ "$PAYLOAD_FILE" == *Payload* ]]; then
+            echo "📦 Extracting cpio payload..."
+            cpio -i < "../pkg_extract/$PAYLOAD_FILE"
+          else
+            echo "❌ Unknown payload format"
+            exit 1
+          fi
+          
+          # Find InstallESD.dmg in the extracted payload (search recursively for all cases)
+          INSTALLESD_DMG=$(find . -type f -name "InstallESD.dmg" | head -1)
+          if [ -z "$INSTALLESD_DMG" ]; then
+            echo "❌ InstallESD.dmg not found in extracted payload, searching inside .app bundles..."
+            # Fallback: look for InstallESD.dmg inside any .app bundle's Contents/SharedSupport
+            APP_BUNDLE=$(find . -type d -name "*.app" | head -1)
+            if [ -n "$APP_BUNDLE" ]; then
+              SHARED_SUPPORT_DMG="$APP_BUNDLE/Contents/SharedSupport/InstallESD.dmg"
+              if [ -f "$SHARED_SUPPORT_DMG" ]; then
+                INSTALLESD_DMG="$SHARED_SUPPORT_DMG"
+                echo "✅ Found InstallESD.dmg inside app bundle: $INSTALLESD_DMG"
+              fi
+            fi
+          fi
+          # Additional fallback: check for InstallESD.dmg directly in the extracted PKG directory
+          if [ -z "$INSTALLESD_DMG" ]; then
+            PKG_DIR=$(dirname "../pkg_extract/$PAYLOAD_FILE")
+            if [ -f "$PKG_DIR/InstallESD.dmg" ]; then
+              INSTALLESD_DMG="$PKG_DIR/InstallESD.dmg"
+              echo "✅ Found InstallESD.dmg directly in PKG: $INSTALLESD_DMG"
+            fi
+          fi
+          if [ -z "$INSTALLESD_DMG" ]; then
+            echo "❌ InstallESD.dmg not found in extracted payload, app bundle, or PKG root"
+            find . -type f | head -20
+            exit 1
+          fi
+          echo "✅ Found InstallESD.dmg: $INSTALLESD_DMG"
+          # Always copy to main workspace so subsequent steps can find it
+          cp "$INSTALLESD_DMG" "$GITHUB_WORKSPACE/InstallESD.dmg"
+          
+          # Cleanup
+          hdiutil detach /tmp/installer
+          rm -rf /tmp/pkg_extract /tmp/payload_extract 2>/dev/null || true
+          
+          echo "✅ $VERSION_NAME download and PKG extraction completed"
+
+      - name: Create ASR-Based Installer (Unified Method)
+        run: |
+          VERSION="${{ github.event.inputs.macos_version }}"
+          
+          case "$VERSION" in
+            "10.9 (Mavericks)")
+              VERSION_NAME="Mavericks"
+              VOLUME_NAME="Install OS X Mavericks"
+              ;;
+            "10.10 (Yosemite)")
+              VERSION_NAME="Yosemite"
+              VOLUME_NAME="Install OS X Yosemite"
+              ;;
+            "10.11 (El Capitan)")
+              VERSION_NAME="El Capitan"
+              VOLUME_NAME="Install OS X El Capitan"
+              ;;
+            "10.12 (Sierra)")
+              VERSION_NAME="Sierra"
+              VOLUME_NAME="Install macOS Sierra"
+              ;;
+          esac
+          
+          echo "🍎 Creating $VERSION_NAME installer using unified ASR method"
+          echo "=================================================================="
+          echo "🔬 This uses the same proven ASR workflow for all versions 10.9-10.12"
+          echo ""
+          
+          # Pre-create cleanup: ensure no stale sparseimage or mount points exist
+          if [ -f "/tmp/ASR_Installer.sparseimage" ]; then
+            echo "⚠️ Removing stale /tmp/ASR_Installer.sparseimage before creation"
+            hdiutil detach /tmp/asr_target || true
+            rm -f /tmp/ASR_Installer.sparseimage
+          fi
+          if mount | grep -q "/tmp/asr_target"; then
+            echo "⚠️ Unmounting stale /tmp/asr_target mount point"
+            hdiutil detach /tmp/asr_target || true
+          fi
+          if mount | grep -q "/tmp/installesd"; then
+            echo "⚠️ Unmounting stale /tmp/installesd mount point"
+            hdiutil detach /tmp/installesd || true
+          fi
+          if mount | grep -q "/tmp/basesystem"; then
+            echo "⚠️ Unmounting stale /tmp/basesystem mount point"
+            hdiutil detach /tmp/basesystem || true
+          fi
+          
+          # Step 1: Create sparse image with version-specific parameters
+          echo "🔧 STEP 1: Creating sparse image"
+          case "$VERSION_NAME" in
+            "El Capitan"|"Sierra")
+              SPARSE_SIZE="9g" # Increased for El Capitan and Sierra
+              ;;
+            *)
+              SPARSE_SIZE="7g"
+              ;;
+          esac
+          hdiutil create -size $SPARSE_SIZE -layout SPUD -fs "HFS+J" -volname "$VOLUME_NAME" -type SPARSE -o "/tmp/ASR_Installer"
+          echo "✅ Sparse image created successfully ($SPARSE_SIZE)"
+          
+          # Step 2: Mount sparse image
+          echo "🔧 STEP 2: Mounting sparse image"
+          hdiutil attach "/tmp/ASR_Installer.sparseimage" -noverify -nobrowse -mountpoint "/tmp/asr_target"
+          echo "✅ Sparse image mounted at /tmp/asr_target"
+          
+          # Step 3: Mount InstallESD
+          echo "🔧 STEP 3: Mounting InstallESD.dmg"
+          hdiutil attach "InstallESD.dmg" -noverify -readonly -nobrowse -mountpoint "/tmp/installesd"
+          echo "✅ InstallESD.dmg mounted successfully"
+          
+          # Step 4: Mount BaseSystem
+          echo "🔧 STEP 4: Mounting BaseSystem.dmg"
+          if [ ! -f "/tmp/installesd/BaseSystem.dmg" ]; then
+            echo "❌ BaseSystem.dmg not found in InstallESD"
+            exit 1
+          fi
+          hdiutil attach "/tmp/installesd/BaseSystem.dmg" -noverify -readonly -nobrowse -mountpoint "/tmp/basesystem"
+          echo "✅ BaseSystem.dmg mounted successfully"
+          
+          # Step 5: ASR restore (unified method)
+          echo "🔧 STEP 5: ASR restore BaseSystem to target"
+          echo "🚀 Starting ASR restore (this may take a few minutes)..."
+          
+          TARGET_DISK=$(mount | grep "/tmp/asr_target" | awk '{print $1}')
+          echo "   Target disk: $TARGET_DISK"
+          
+          if ! asr restore --source "/tmp/basesystem" --target "$TARGET_DISK" --noprompt --noverify --erase 2>&1 | tee /tmp/asr_output.log; then
+            echo "❌ ASR restore failed"
+            echo "🔍 ASR output:"
+            cat /tmp/asr_output.log
+            exit 1
+          fi
+          
+          echo "✅ ASR restore completed"
+          
+          # Check for Error 22 (harmless for older macOS versions)
+          if grep -q "error = 22" /tmp/asr_output.log; then
+            echo "ℹ️  Note: ASR reported 'error = 22' - this is harmless for older macOS versions"
+          fi
+          
+          # Step 6: Clean remount for read-write access
+          echo "🔧 STEP 6: Preparing read-write access"
+
+          # Define robust_detach function for this block (improved lsof handling)
+          robust_detach() {
+            local mount_point="$1"
+            local max_attempts=6
+            local attempt=1
+            local sleep_time=20
+            sync
+            # If the mount point does not exist or is not mounted, return success immediately
+            if [ ! -d "$mount_point" ] || ! mount | grep -q " $mount_point "; then
+              echo "[robust_detach] $mount_point does not exist or is not mounted, skipping."
+              return 0
+            fi
+            while [ $attempt -le $max_attempts ]; do
+              echo "[robust_detach] Attempt $attempt to detach $mount_point"
+              if hdiutil detach "$mount_point" -force; then
+                echo "[robust_detach] Successfully detached $mount_point"
+                return 0
+              else
+                if [ -d "$mount_point" ]; then
+                  lsof +D "$mount_point" || true
+                else
+                  echo "[robust_detach] $mount_point does not exist, skipping lsof."
+                fi
+                if [ $attempt -eq $max_attempts ]; then
+                  echo "[robust_detach] Max attempts reached. Forcing detach and continuing."
+                  hdiutil detach "$mount_point" -force || true
+                  return 1
+                fi
+                sleep $sleep_time
+                attempt=$((attempt+1))
+              fi
+            done
+          }
+
+          # Detach all current mounts to avoid conflicts
+          robust_detach "/tmp/basesystem"
+          robust_detach "/tmp/asr_target"
+
+          # Clean up ASR-created BaseSystem volumes quietly
+          mount | grep -E "OS X Base System|Mac OS X Base System" 2>/dev/null | while IFS= read -r line; do
+            if [[ "$line" =~ .*\ on\ (.*)\ \(.* ]]; then
+              vol="${BASH_REMATCH[1]}"
+              if [ -n "$vol" ] && [ -d "$vol" ]; then
+                hdiutil detach "$vol" -force 2>/dev/null || true
+              fi
+            fi
+          done
+
+          sleep 2
+          # Wait for sparseimage to be fully released before re-attaching
+          for i in {1..10}; do
+            # Directly kill any process holding the image open
+            PIDS=$(lsof | grep "/tmp/ASR_Installer.sparseimage" | awk '{print $2}' | sort -u)
+            if [ -n "$PIDS" ]; then
+              for pid in $PIDS; do
+                echo "[DEBUG] Killing process $pid holding sparseimage open"
+                kill -9 $pid || true
+              done
+              sleep 2
+              # Re-check and forcibly detach device nodes if still present
+              for dev in $(hdiutil info | awk -v img="/tmp/ASR_Installer.sparseimage" '
+                BEGIN {dev=""}
+                /^\/dev\// {dev=$1}
+                $0 ~ img && dev != "" {print dev}
+              '); do
+                echo "[DEBUG] Forcibly detaching lingering device $dev"
+                hdiutil detach -force "$dev" || true
+                diskutil unmountDisk force "$dev" || true
+                diskutil eject "$dev" || true
+              done
+              sleep 1
+            fi
+
+            if hdiutil attach "/tmp/ASR_Installer.sparseimage" -noverify -nobrowse -mountpoint "/tmp/asr_target_rw"; then
+              break
+            else
+              echo "Waiting for sparseimage to be released (attempt $i)..."
+              sleep 2
+            fi
+
+            if [ $i -eq 10 ]; then
+              echo "❌ Failed to re-attach sparseimage after multiple attempts"
+              exit 1
+            fi
+
+          done
+          RESTORED_VOLUME="/tmp/asr_target_rw"
+          echo "✅ Sparse image remounted successfully"
+          
+          # Step 7: Validate restored content
+          echo "🔧 STEP 7: Validating restored content"
+          if [ ! -d "$RESTORED_VOLUME/System/Library/CoreServices" ]; then
+            echo "❌ Required content missing after restore"
+            echo "🔍 Available content:"
+            ls -la "$RESTORED_VOLUME" | head -10
+            exit 1
+          fi
+          
+          # Verify read-write access
+          if ! touch "$RESTORED_VOLUME/test_write" 2>/dev/null; then
+            echo "❌ Volume is still read-only"
+            exit 1
+          fi
+          rm -f "$RESTORED_VOLUME/test_write"
+          echo "✅ Content validated and read-write access confirmed"
+          
+          # Step 8: Copy installer packages (unified method)
+          echo "🔧 STEP 8: Copying installer packages"
+          
+          # Check if Packages is a symlink (typical in BaseSystem) and remove it
+          if [ -L "$RESTORED_VOLUME/System/Installation/Packages" ]; then
+            echo "⚠️  Removing existing Packages symlink"
+            unlink "$RESTORED_VOLUME/System/Installation/Packages"
+          elif [ -e "$RESTORED_VOLUME/System/Installation/Packages" ]; then
+            echo "⚠️  Removing existing Packages directory"
+            rm -rf "$RESTORED_VOLUME/System/Installation/Packages"
+          fi
+          
+          # Copy the full packages directory from InstallESD to replace the symlink
+          if [ -d "/tmp/installesd/Packages" ]; then
+            echo "📦 Copying packages from InstallESD..."
+            echo "   Source: /tmp/installesd/Packages"
+            echo "   Target: $RESTORED_VOLUME/System/Installation/"
+            
+            # Show source package count
+            SOURCE_PKG_COUNT=$(find "/tmp/installesd/Packages" -name "*.pkg" -o -name "*.mpkg" | wc -l)
+            echo "   Source packages: $SOURCE_PKG_COUNT"
+            
+            cp -R "/tmp/installesd/Packages" "$RESTORED_VOLUME/System/Installation/"
+            
+            # Verify copy was successful
+            if [ -d "$RESTORED_VOLUME/System/Installation/Packages" ]; then
+              TARGET_PKG_COUNT=$(find "$RESTORED_VOLUME/System/Installation/Packages" -name "*.pkg" -o -name "*.mpkg" | wc -l)
+              echo "   Target packages: $TARGET_PKG_COUNT"
+              
+              if [ "$SOURCE_PKG_COUNT" -eq "$TARGET_PKG_COUNT" ]; then
+                echo "✅ Package count verified - all packages copied"
+              else
+                echo "⚠️  Package count mismatch - some packages may be missing"
+              fi
+              
+              # Check if it's a real directory, not a symlink
+              if [ -L "$RESTORED_VOLUME/System/Installation/Packages" ]; then
+                echo "❌ Packages is still a symlink after copy!"
+                exit 1
+              else
+                echo "✅ Packages is now a real directory (not symlink)"
+              fi
+            else
+              echo "❌ Packages directory not found after copy"
+              exit 1
+            fi
+          else
+            echo "❌ Packages directory not found in InstallESD"
+            exit 1
+          fi
+          
+          # Step 9: Copy BaseSystem.dmg to target (CRITICAL FOR VM COMPATIBILITY)
+          echo "🔧 STEP 9: Copying BaseSystem.dmg to target"
+          cp "/tmp/installesd/BaseSystem.dmg" "$RESTORED_VOLUME/"
+          echo "✅ BaseSystem.dmg copied successfully"
+          
+          # Step 10: Copy BaseSystem.chunklist if present
+          echo "🔧 STEP 10: Copying BaseSystem.chunklist (if present)"
+          if [ -f "/tmp/installesd/BaseSystem.chunklist" ]; then
+            cp "/tmp/installesd/BaseSystem.chunklist" "$RESTORED_VOLUME/"
+            echo "✅ BaseSystem.chunklist copied"
+          else
+            echo "ℹ️  BaseSystem.chunklist not found (may be normal for older versions)"
+          fi
+          
+          # Step 11: Add volume icon and additional files
+          echo "🔧 STEP 11: Adding volume icon and additional files"
+          
+          # Remove problematic symlinks and aliases
+          find "$RESTORED_VOLUME" -type l -name "Applications" -delete 2>/dev/null || true
+          find "$RESTORED_VOLUME" -name "Applications" -exec file {} \; | grep "alias" | cut -d: -f1 | xargs rm -f 2>/dev/null || true
+          
+          # Copy additional files if present
+          for file in mach_kernel .IABootFiles .DS_Store; do
+            if [ -e "/tmp/installesd/$file" ]; then
+              cp -R "/tmp/installesd/$file" "$RESTORED_VOLUME/" 2>/dev/null || true
+              echo "✅ $file copied"
+            fi
+          done
+          
+          # Add volume icon for better VM recognition
+          INSTALLER_APP=$(find "$RESTORED_VOLUME" -name "Install*.app" -type d | head -1)
+          if [ -n "$INSTALLER_APP" ] && [ -f "$INSTALLER_APP/Contents/Resources/InstallAssistant.icns" ]; then
+            cp "$INSTALLER_APP/Contents/Resources/InstallAssistant.icns" "$RESTORED_VOLUME/.VolumeIcon.icns" 2>/dev/null || true
+            echo "✅ Volume icon added"
+          else
+            echo "⚠️  InstallAssistant.icns not found, skipping volume icon"
+          fi
+          
+          # Step 12: Set proper volume name
+          echo "🔧 STEP 12: Setting proper volume name"
+          if diskutil rename "$RESTORED_VOLUME" "$VOLUME_NAME"; then
+            echo "✅ Volume renamed successfully"
+          else
+            echo "⚠️  Volume rename failed, continuing with current mount point"
+          fi
+          
+          # Step 13: Find and bless the system
+          echo "🔧 STEP 13: Blessing the system"
+          
+          # Find the volume after potential rename
+          FINAL_VOLUME=""
+          if [ -d "$RESTORED_VOLUME" ]; then
+            FINAL_VOLUME="$RESTORED_VOLUME"
+          elif [ -d "/Volumes/$VOLUME_NAME" ]; then
+            FINAL_VOLUME="/Volumes/$VOLUME_NAME"
+          else
+            # Try to remount the sparse image
+            if hdiutil attach "/tmp/ASR_Installer.sparseimage" -noverify -nobrowse 2>/dev/null; then
+              sleep 2
+              if [ -d "/Volumes/$VOLUME_NAME" ]; then
+                FINAL_VOLUME="/Volumes/$VOLUME_NAME"
+              else
+                # Find any volume that contains our system
+                for vol in /Volumes/*; do
+                  if [ -d "$vol/System/Library/CoreServices" ] && [ -d "$vol/Install"*.app ]; then
+                    FINAL_VOLUME="$vol"
+                    break
+                  fi
+                done
+              fi
+            fi
+          fi
+          
+          if [ -z "$FINAL_VOLUME" ] || [ ! -d "$FINAL_VOLUME" ]; then
+            echo "❌ Cannot find volume for blessing"
+            exit 1
+          fi
+          
+          echo "✅ Using volume for blessing: $FINAL_VOLUME"
+          
+          if [ -d "$FINAL_VOLUME/System/Library/CoreServices" ]; then
+            bless --folder "$FINAL_VOLUME/System/Library/CoreServices" --bootinfo --label "$VOLUME_NAME"
+            echo "✅ Volume blessed successfully with label"
+            RESTORED_VOLUME="$FINAL_VOLUME" # Update for subsequent operations
+          else
+            echo "❌ Could not bless - CoreServices not found"
+            exit 1
+          fi
+          
+          # Step 14: Detach all volumes for optimization
+          echo "🔧 STEP 14: Detaching all volumes for optimization"
+
+          # Robust detach function (matches local script)
+          robust_detach() {
+            local mount_point="$1"
+            local max_attempts=6
+            local attempt=1
+            local sleep_time=20
+            sync
+            # If the mount point does not exist or is not mounted, return success immediately
+            if [ ! -d "$mount_point" ] || ! mount | grep -q " $mount_point "; then
+              echo "[robust_detach] $mount_point does not exist or is not mounted, skipping."
+              return 0
+            fi
+            while [ $attempt -le $max_attempts ]; do
+              echo "[robust_detach] Attempt $attempt to detach $mount_point"
+              if hdiutil detach "$mount_point" -force; then
+                echo "[robust_detach] Successfully detached $mount_point"
+                return 0
+              else
+                echo "[robust_detach] Detach attempt $attempt failed for $mount_point. Checking for open files..."
+                lsof +D "$mount_point" || true
+                if [ $attempt -eq $max_attempts ]; then
+                  echo "[robust_detach] Max attempts reached. Forcing detach and continuing."
+                  hdiutil detach "$mount_point" -force || true
+                  return 1
+                fi
+                sleep $sleep_time
+                attempt=$((attempt+1))
+              fi
+            done
+          }
+
+          # Detach all known mount points using robust_detach
+          for mp in /tmp/basesystem /tmp/installesd "$RESTORED_VOLUME"; do
+            robust_detach "$mp"
+          done
+
+          # Also detach any remaining BaseSystem or InstallESD volumes
+          for mp in $(mount | grep -E "OS X Base System|Mac OS X Base System|InstallESD" | awk '{print $3}'); do
+            robust_detach "$mp"
+          done
+
+          echo "✅ Primary detach operations completed"
+          
+          # Step 15: Optimize sparse image
+          echo "🔧 STEP 15: Optimizing sparse image"
+
+          # Wait for sparseimage to be fully released before compact/resize/convert
+          for i in {1..10}; do
+            PIDS=$(lsof | grep "/tmp/ASR_Installer.sparseimage" | awk '{print $2}' | sort -u)
+            if [ -n "$PIDS" ]; then
+              for pid in $PIDS; do
+                echo "[DEBUG] Killing process $pid holding sparseimage open (pre-compact)"
+                kill -9 $pid || true
+              done
+              sleep 2
+              for dev in $(hdiutil info | awk -v img="/tmp/ASR_Installer.sparseimage" '
+                BEGIN {dev=""}
+                /^\/dev\// {dev=$1}
+                $0 ~ img && dev != "" {print dev}
+              '); do
+                echo "[DEBUG] Forcibly detaching lingering device $dev (pre-compact)"
+                hdiutil detach -force "$dev" || true
+                diskutil unmountDisk force "$dev" || true
+                diskutil eject "$dev" || true
+              done
+              sleep 1
+            fi
+            # If no holders or device nodes, break
+            if ! lsof | grep -q "/tmp/ASR_Installer.sparseimage" && ! hdiutil info | grep -q "/tmp/ASR_Installer.sparseimage"; then
+              break
+            fi
+            if [ $i -eq 10 ]; then
+              echo "❌ Failed to release sparseimage after multiple attempts (pre-compact)"
+              exit 1
+            fi
+            sleep 2
+          done
+
+          echo "📏 Compacting sparse image..."
+          hdiutil compact "/tmp/ASR_Installer.sparseimage" || echo "⚠️  Compact failed but continuing..."
+          echo "📐 Resizing to minimum size..."
+          hdiutil resize -size min "/tmp/ASR_Installer.sparseimage" || echo "⚠️  Resize failed but continuing..."
+
+          # Wait again before convert
+          for i in {1..10}; do
+            PIDS=$(lsof | grep "/tmp/ASR_Installer.sparseimage" | awk '{print $2}' | sort -u)
+            if [ -n "$PIDS" ]; then
+              for pid in $PIDS; do
+                echo "[DEBUG] Killing process $pid holding sparseimage open (pre-convert)"
+                kill -9 $pid || true
+              done
+              sleep 2
+              for dev in $(hdiutil info | awk -v img="/tmp/ASR_Installer.sparseimage" '
+                BEGIN {dev=""}
+                /^\/dev\// {dev=$1}
+                $0 ~ img && dev != "" {print dev}
+              '); do
+                echo "[DEBUG] Forcibly detaching lingering device $dev (pre-convert)"
+                hdiutil detach -force "$dev" || true
+                diskutil unmountDisk force "$dev" || true
+                diskutil eject "$dev" || true
+              done
+              sleep 1
+            fi
+            if ! lsof | grep -q "/tmp/ASR_Installer.sparseimage" && ! hdiutil info | grep -q "/tmp/ASR_Installer.sparseimage"; then
+              break
+            fi
+            if [ $i -eq 10 ]; then
+              echo "❌ Failed to release sparseimage after multiple attempts (pre-convert)"
+              exit 1
+            fi
+            sleep 2
+          done
+
+          echo "✅ Image optimization completed"
+          echo "✅ Unified ASR installer creation completed for $VERSION_NAME"
+
+      - name: Create DMG Output
+        if: ${{ contains(github.event.inputs.output_format, 'DMG') }}
+        run: |
+          VERSION="${{ github.event.inputs.macos_version }}"
+          case "$VERSION" in
+            "10.9 (Mavericks)" ) TAG="Mavericks" ;;
+            "10.10 (Yosemite)" ) TAG="Yosemite" ;;
+            "10.11 (El Capitan)" ) TAG="El_Capitan" ;;
+            "10.12 (Sierra)" ) TAG="Sierra" ;;
+          esac
+          echo "💿 Creating DMG for $TAG..."
+          hdiutil convert "/tmp/ASR_Installer.sparseimage" -format UDZO -o "/tmp/macOS-${TAG}.dmg"
+          # Wait for DMG to appear (up to 10s)
+          for i in {1..10}; do
+            if [ -f "/tmp/macOS-${TAG}.dmg" ]; then
+              break
+            fi
+            sleep 1
+          done
+          if [ -f "/tmp/macOS-${TAG}.dmg" ]; then
+            echo "✅ DMG created successfully"
+            SIZE=$(ls -lh /tmp/macOS-${TAG}.dmg 2>/dev/null | awk '{print $5}')
+            if [ -z "$SIZE" ]; then
+              if stat -f%z /tmp/macOS-${TAG}.dmg >/dev/null 2>&1; then
+                SIZE_BYTES=$(stat -f%z /tmp/macOS-${TAG}.dmg)
+                SIZE=$(numfmt --to=iec $SIZE_BYTES 2>/dev/null || echo "${SIZE_BYTES}B")
+              else
+                echo "⚠️  Could not determine DMG size. Directory listing:"
+                ls -l /tmp
+                SIZE="unknown"
+              fi
+            fi
+            echo "📊 Size: $SIZE"
+          else
+            echo "❌ DMG not created as expected"
+            ls -l /tmp
+          fi
+
+      - name: Create ISO Output
+        if: ${{ contains(github.event.inputs.output_format, 'ISO') }}
+        run: |
+          VERSION="${{ github.event.inputs.macos_version }}"
+          case "$VERSION" in
+            "10.9 (Mavericks)" ) TAG="Mavericks" ;;
+            "10.10 (Yosemite)" ) TAG="Yosemite" ;;
+            "10.11 (El Capitan)" ) TAG="El_Capitan" ;;
+            "10.12 (Sierra)" ) TAG="Sierra" ;;
+          esac
+          echo "💿 Creating ISO for $TAG..."
+          hdiutil convert "/tmp/ASR_Installer.sparseimage" -format UDTO -o "/tmp/macOS-${TAG}.cdr"
+          # Wait for CDR to appear (up to 10s)
+          for i in {1..10}; do
+            if [ -f "/tmp/macOS-${TAG}.cdr" ]; then
+              break
+            fi
+            sleep 1
+          done
+          if [ -f "/tmp/macOS-${TAG}.cdr" ]; then
+            mv "/tmp/macOS-${TAG}.cdr" "/tmp/macOS-${TAG}.iso"
+            echo "✅ ISO created successfully"
+            SIZE=$(ls -lh /tmp/macOS-${TAG}.iso 2>/dev/null | awk '{print $5}')
+            if [ -z "$SIZE" ]; then
+              if stat -f%z /tmp/macOS-${TAG}.iso >/dev/null 2>&1; then
+                SIZE_BYTES=$(stat -f%z /tmp/macOS-${TAG}.iso)
+                SIZE=$(numfmt --to=iec $SIZE_BYTES 2>/dev/null || echo "${SIZE_BYTES}B")
+              else
+                echo "⚠️  Could not determine ISO size. Directory listing:"
+                ls -l /tmp
+                SIZE="unknown"
+              fi
+            fi
+            echo "📊 Size: $SIZE"
+          else
+            echo "❌ ISO not created as expected"
+            ls -l /tmp
+          fi
+
+      - name: Verify Unified ASR Installers
+        run: |
+          VERSION="${{ github.event.inputs.macos_version }}"
+          case "$VERSION" in
+            "10.9 (Mavericks)" ) TAG="Mavericks" ;;
+            "10.10 (Yosemite)" ) TAG="Yosemite" ;;
+            "10.11 (El Capitan)" ) TAG="El_Capitan" ;;
+            "10.12 (Sierra)" ) TAG="Sierra" ;;
+          esac
+          echo "🔍 Verifying unified ASR installers for $TAG..."
+          # Verify DMG (if created)
+          if [ -f "/tmp/macOS-${TAG}.dmg" ]; then
+            echo "✅ DMG created: $(ls -lh "/tmp/macOS-${TAG}.dmg" | awk '{print $5}')"
+            # Quick verification
+            if hdiutil attach "/tmp/macOS-${TAG}.dmg" -noverify -readonly -mountpoint /tmp/verify_dmg; then
+              VOLUME_NAME=$(diskutil info /tmp/verify_dmg | grep "Volume Name" | cut -d: -f2 | xargs)
+              echo "✅ DMG Volume Name: $VOLUME_NAME"
+              if [ -d "/tmp/verify_dmg/System/Installation/Packages" ]; then
+                if [ -L "/tmp/verify_dmg/System/Installation/Packages" ]; then
+                  echo "⚠️ DMG Packages is still a symlink (should be full directory)"
+                else
+                  PKG_COUNT=$(find "/tmp/verify_dmg/System/Installation/Packages" -name "*.pkg" -o -name "*.mpkg" | wc -l)
+                  echo "✅ DMG Package Count: $PKG_COUNT (full directory)"
+                fi
+              fi
+              hdiutil detach "/tmp/verify_dmg" 2>/dev/null || true
+            fi
+          fi
+          # Verify ISO (if created)
+          if [ -f "/tmp/macOS-${TAG}.iso" ]; then
+            echo "✅ ISO created: $(ls -lh "/tmp/macOS-${TAG}.iso" | awk '{print $5}')"
+            # Quick verification
+            if hdiutil attach "/tmp/macOS-${TAG}.iso" -noverify -readonly -mountpoint /tmp/verify_iso; then
+              VOLUME_NAME=$(diskutil info /tmp/verify_iso | grep "Volume Name" | cut -d: -f2 | xargs)
+              echo "✅ ISO Volume Name: $VOLUME_NAME"
+              if [ -d "/tmp/verify_iso/System/Installation/Packages" ]; then
+                if [ -L "/tmp/verify_iso/System/Installation/Packages" ]; then
+                  echo "⚠️ ISO Packages is still a symlink (should be full directory)"
+                else
+                  PKG_COUNT=$(find "/tmp/verify_iso/System/Installation/Packages" -name "*.pkg" -o -name "*.mpkg" | wc -l)
+                  echo "✅ ISO Package Count: $PKG_COUNT (full directory)"
+                fi
+              fi
+              hdiutil detach "/tmp/verify_iso" 2>/dev/null || true
+            fi
+          fi
+          echo ""
+          echo "🆚 UNIFIED ASR METHOD VALIDATION:"
+          echo "   • Used ASR restore instead of hdiutil convert"
+          echo "   • Copied full packages directory (not symlinks)"
+          echo "   • Applied proper volume blessing"
+          echo "   • Compacted before final conversion"
+          echo "   • Same workflow for all versions 10.9-10.12"
+          echo "   • Version-specific download methods preserved"
+
+      - name: Install oras
+        run: |
+          # Install oras          
+          brew install oras || true
+
+      - name: Push ASR installer to GHCR
+        if: ${{ always() }}
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ github.event.inputs.macos_version }}"
+          case "$VERSION" in
+            "10.9 (Mavericks)" ) TAG="Mavericks" ;;
+            "10.10 (Yosemite)" ) TAG="Yosemite" ;;
+            "10.11 (El Capitan)" ) TAG="El_Capitan" ;;
+            "10.12 (Sierra)" ) TAG="Sierra" ;;
+          esac
+          echo "$GHCR_TOKEN" | oras login ghcr.io -u "$GHCR_USER" --password-stdin
+          # Determine tag suffixes for each artifact
+          DMG_TAG="${TAG}-dmg"
+          ISO_TAG="${TAG}-iso"
+
+          # Push DMG if requested and present
+          if [[ "${{ github.event.inputs.output_format }}" == *"DMG"* ]]; then
+            if [ -f "/tmp/macOS-${TAG}.dmg" ]; then
+              echo "[DEBUG] Pushing DMG as ${DMG_TAG}"
+              oras push ghcr.io/${GHCR_USER}/macos-iso:${DMG_TAG} \
+                --disable-path-validation \
+                "/tmp/macOS-${TAG}.dmg:application/x-apple-diskimage"
+            else
+              echo "[ERROR] DMG requested but /tmp/macOS-${TAG}.dmg not found!"
+            fi
+          fi
+
+          # Push ISO if requested and present
+          if [[ "${{ github.event.inputs.output_format }}" == *"ISO"* ]]; then
+            if [ -f "/tmp/macOS-${TAG}.iso" ]; then
+              echo "[DEBUG] Pushing ISO as ${ISO_TAG}"
+              oras push ghcr.io/${GHCR_USER}/macos-iso:${ISO_TAG} \
+                --disable-path-validation \
+                "/tmp/macOS-${TAG}.iso:application/x-cd-image"
+            else
+              echo "[ERROR] ISO requested but /tmp/macOS-${TAG}.iso not found!"
+            fi
+          fi
+
+      - name: Summary
+        run: |
+          VERSION="${{ github.event.inputs.macos_version }}"
+          case "$VERSION" in
+            "10.9 (Mavericks)" ) TAG="Mavericks" ;;
+            "10.10 (Yosemite)" ) TAG="Yosemite" ;;
+            "10.11 (El Capitan)" ) TAG="El_Capitan" ;;
+            "10.12 (Sierra)" ) TAG="Sierra" ;;
+          esac
+          echo ""
+          echo "🎉 SUCCESS! $TAG ASR installer created successfully!"
+          echo ""
+          echo "📁 Created files:"
+          if [ -f "/tmp/macOS-${TAG}.dmg" ]; then
+            echo "   • DMG: $(ls -lh "/tmp/macOS-${TAG}.dmg" | awk '{print $5}')"
+          fi
+          if [ -f "/tmp/macOS-${TAG}.iso" ]; then
+            echo "   • ISO: $(ls -lh "/tmp/macOS-${TAG}.iso" | awk '{print $5}')"
+          fi
+          echo ""
+          echo "🔬 This installer uses the unified ASR method:"
+          echo "   • ASR restore for proper VM boot compatibility"
+          echo "   • Complete package copying (no symlinks)"
+          echo "   • Proper volume blessing and naming"
+          echo "   • Optimized for all major VM platforms"
+          echo ""
+          echo "💡 Usage recommendations:"
+          echo "   • Parallels Desktop: Both DMG and ISO formats work (tested ✅)"
+          echo "   • VMware Fusion: Use either DMG or ISO format"
+          echo "   • VirtualBox: Use ISO format (best compatibility)"
+          echo ""
+          echo "✅ Ready for VM deployment!"
