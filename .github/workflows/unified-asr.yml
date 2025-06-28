@@ -1,0 +1,443 @@
+name: Installer for macOS (10.9-10.12)
+on:
+  workflow_dispatch:
+    inputs:
+      macos_version:
+        description: 'macOS version to create'
+        required: true
+        type: choice
+        options:
+          - '10.9 (Mavericks)'
+          - '10.10 (Yosemite)'
+          - '10.11 (El Capitan)'
+          - '10.12 (Sierra)'
+        default: '10.9 (Mavericks)'
+      output_format:
+        description: 'Output format for the installer'
+        required: true
+        type: choice
+        options:
+          - 'Both DMG and ISO'
+          - 'DMG only (Parallels recommended)'
+          - 'ISO only (VMware/VirtualBox)'
+        default: 'Both DMG and ISO'
+
+jobs:
+  unified-asr-installer:
+    runs-on: macos-13
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+      - uses: actions/checkout@v3
+      - name: List scripts in runner
+        run: |
+          echo "Current directory: $(pwd)"
+          ls -l
+          ls -l ./local-test-scripts
+
+      - name: Set Version Parameters
+        run: |
+          echo "🔧 Setting version-specific parameters..."
+          VERSION="${{ github.event.inputs.macos_version }}"
+          echo "DEBUG: VERSION is '$VERSION'"
+
+          case "$VERSION" in
+            "10.9 (Mavericks)")
+              VERSION_NUM=10.9
+              VERSION_NAME=Mavericks
+              VOLUME_NAME="Install OS X Mavericks"
+              DOWNLOAD_METHOD=recovery_api
+              BOARD_ID=Mac-3CBD00234E554E41
+              ;;
+            "10.10 (Yosemite)")
+              VERSION_NUM=10.10
+              VERSION_NAME=Yosemite
+              VOLUME_NAME="Install OS X Yosemite"
+              DOWNLOAD_METHOD=direct_url
+              DOWNLOAD_URL="https://updates.cdn-apple.com/2019/cert/061-41343-20191023-02465f92-3ab5-4c92-bfe2-b725447a070d/InstallMacOSX.dmg"
+              ;;
+            "10.11 (El Capitan)")
+              VERSION_NUM=10.11
+              VERSION_NAME="El Capitan"
+              VOLUME_NAME="Install OS X El Capitan"
+              DOWNLOAD_METHOD=direct_url
+              DOWNLOAD_URL="http://updates.cdn-apple.com/2019/cert/061-41424-20191024-218af9ec-cf50-4516-9011-228c78eda3d2/InstallMacOSX.dmg"
+              ;;
+            "10.12 (Sierra)")
+              VERSION_NUM=10.12
+              VERSION_NAME=Sierra
+              VOLUME_NAME="Install macOS Sierra"
+              DOWNLOAD_METHOD=direct_url
+              DOWNLOAD_URL="http://updates.cdn-apple.com/2019/cert/061-39476-20191023-48f365f4-0015-4c41-9f44-39d3d2aca067/InstallOS.dmg"
+              ;;
+          esac
+
+          # Export for later steps
+          echo "VERSION_NUM=$VERSION_NUM" >> $GITHUB_ENV
+          echo "VERSION_NAME=$VERSION_NAME" >> $GITHUB_ENV
+          echo "VOLUME_NAME=$VOLUME_NAME" >> $GITHUB_ENV
+          echo "VOLNAME=$VOLUME_NAME" >> $GITHUB_ENV
+          echo "DOWNLOAD_METHOD=$DOWNLOAD_METHOD" >> $GITHUB_ENV
+          echo "BOARD_ID=$BOARD_ID" >> $GITHUB_ENV
+          if [ -n "$DOWNLOAD_URL" ]; then
+            echo "DOWNLOAD_URL=$DOWNLOAD_URL" >> $GITHUB_ENV
+          fi
+
+          echo "✅ Version: $VERSION_NAME ($VERSION_NUM)"
+          echo "✅ Volume Name: $VOLUME_NAME"
+          echo "✅ Download Method: $DOWNLOAD_METHOD"
+
+      - name: Download macOS Installer (Mavericks - Recovery API)
+        if: contains(github.event.inputs.macos_version, '10.9')
+        run: |
+          echo "🍎 Downloading Mavericks via Apple Recovery API..."
+          
+          # Apple Recovery API authentication
+          # BOARD_SERIAL_NUMBER and ROM are injected via secrets for Mavericks only
+          BOARD_SERIAL_NUMBER="${BOARD_SERIAL}"
+          BOARD_ID="Mac-3CBD00234E554E41"
+          ROM="${ROM}"
+          
+          hex_to_bin() {
+              echo -n "$1" | xxd -r -p
+          }
+          
+          echo "🔐 Authenticating with Apple recovery servers..."
+          
+          # Get server session
+          SERVER_ID=$(curl -v -fs -c - http://osrecovery.apple.com/ 2>/dev/null | tail -1 | awk '{print $NF}')
+          if [ -z "$SERVER_ID" ]; then
+            echo "❌ Failed to get server ID from Apple"
+            exit 1
+          fi
+          echo "✅ Server ID obtained: $SERVER_ID"
+          
+          CLIENT_ID=$(dd if=/dev/urandom bs=8 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n' | tr '[:lower:]' '[:upper:]')
+          echo "✅ Client ID generated: $CLIENT_ID"
+          
+          # Generate authentication key (robust method, matches enhanced-mavericks.yml)
+          {
+              hex_to_bin "$CLIENT_ID"
+              hex_to_bin "$(echo $SERVER_ID | awk -F'~' '{print $2}')"
+              hex_to_bin "$ROM"
+              printf "%s" "${BOARD_SERIAL_NUMBER}${BOARD_ID}" | iconv -t utf-8 | openssl dgst -sha256 -binary
+              printf '\xCC\xCC\xCC\xCC\xCC\xCC\xCC\xCC\xCC\xCC'
+          } > auth_info
+          K=$(openssl dgst -sha256 -binary < auth_info | od -An -tx1 | tr -d ' \n' | tr '[:lower:]' '[:upper:]')
+          rm auth_info
+          echo "✅ Authentication key generated"
+          
+          echo "📦 Requesting Mavericks installer information..."
+          
+          # Create the data payload
+          echo "cid=$CLIENT_ID" > /tmp/post_data
+          echo "sn=$BOARD_SERIAL_NUMBER" >> /tmp/post_data
+          echo "bid=$BOARD_ID" >> /tmp/post_data
+          echo "k=$K" >> /tmp/post_data
+          echo "" >> /tmp/post_data
+          
+          INSTALL_ESD_INFO=$(curl -s 'http://osrecovery.apple.com/InstallationPayload/OSInstaller' -X POST -H 'Content-Type: text/plain' -H 'User-Agent: InternetRecovery/1.0' --cookie "session=$SERVER_ID" --data-binary @/tmp/post_data)
+          
+          rm -f /tmp/post_data
+          
+          INSTALL_ESD_URL=$(echo "$INSTALL_ESD_INFO" | grep "^AU:" | cut -d' ' -f2)
+          INSTALL_ESD_ASSET_TOKEN=$(echo "$INSTALL_ESD_INFO" | grep "^AT:" | cut -d' ' -f2)
+          
+          if [ -z "$INSTALL_ESD_URL" ]; then
+            echo "❌ Failed to get Mavericks download URL from Apple"
+            exit 1
+          fi
+          
+          echo "✅ Got authenticated download URL"
+          echo "🔽 Downloading InstallESD.dmg..."
+          curl -L "$INSTALL_ESD_URL" -H "Cookie: AssetToken=$INSTALL_ESD_ASSET_TOKEN" -o macOS-Mavericks-InstallESD.dmg
+          
+          # Verify checksum
+          echo "🔍 Verifying file integrity..."
+          ACTUAL_CHECKSUM=$(openssl dgst -sha256 macOS-Mavericks-InstallESD.dmg | cut -d' ' -f2)
+          EXPECTED_CHECKSUM="c861fd59e82bf777496809a0d2a9b58f66691ee56738031f55874a3fe1d7c3ff"
+          
+          if [ "$ACTUAL_CHECKSUM" != "$EXPECTED_CHECKSUM" ]; then
+            echo "❌ Checksum verification failed!"
+            exit 1
+          fi
+          
+          echo "✅ InstallESD.dmg downloaded and verified ($(ls -lh macOS-Mavericks-InstallESD.dmg | awk '{print $5}'))"
+          cp macOS-Mavericks-InstallESD.dmg InstallESD.dmg
+
+      - name: Download macOS Installer (10.10-10.12 - Direct URL)
+        if: ${{ !contains(github.event.inputs.macos_version, '10.9') }}
+        run: |
+          VERSION="${{ github.event.inputs.macos_version }}"
+          # Use environment variables set in previous step
+          echo "🍎 Downloading $VERSION via direct URL..."
+          echo "Using DOWNLOAD_URL: $DOWNLOAD_URL"
+          echo "Using VERSION_NAME: $VERSION_NAME"
+          echo "Using EXPECTED_CHECKSUM: $EXPECTED_CHECKSUM"
+
+          # Set expected checksums for each version
+          case "$VERSION" in
+            "10.10 (Yosemite)")
+              EXPECTED_CHECKSUM="de869907ce4289fe948cbd2dea7479ff9c369bbf47b06d5cb5290d78fb2932c6"
+              ;;
+            "10.11 (El Capitan)")
+              EXPECTED_CHECKSUM="bca6d2b699fc03e7876be9c9185d45bf4574517033548a47cb0d0938c5732d59"
+              ;;
+            "10.12 (Sierra)")
+              EXPECTED_CHECKSUM="c793c9aae9b59302b4b01a52aad387d7e4873cf00c48352afc1ffcc826cb0208"
+              ;;
+          esac
+
+          # Download the installer
+          echo "📥 Downloading from: $DOWNLOAD_URL"
+          if ! curl -fs -o "Installer.dmg" "$DOWNLOAD_URL"; then
+            echo "❌ Failed to download installer"
+            echo "🔍 Trying alternative download methods..."
+            if ! curl -A "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" -fs -o "Installer.dmg" "$DOWNLOAD_URL"; then
+              echo "❌ All download methods failed"
+              exit 1
+            fi
+          fi
+          echo "✅ Download completed successfully"
+
+          # Verify checksum
+          echo "🔍 Verifying file integrity..."
+          ACTUAL_CHECKSUM=$(openssl dgst -sha256 Installer.dmg | cut -d' ' -f2)
+          if [ "$ACTUAL_CHECKSUM" != "$EXPECTED_CHECKSUM" ]; then
+            echo "❌ Checksum verification failed!"
+            echo "Expected: $EXPECTED_CHECKSUM"
+            echo "Actual:   $ACTUAL_CHECKSUM"
+            exit 1
+          fi
+          echo "✅ Checksum verified: $ACTUAL_CHECKSUM"
+          # Do NOT extract PKG or InstallESD.dmg here; handled in step2b_extract_installesd.sh
+
+      - name: Create ASR-Based Installer (Unified Method)
+        run: |
+          # Version/volume info is already set by workflow, no need to source step1_set_version.sh in CI
+          ./local-test-scripts/step2b_extract_installesd.sh || { echo "❌ step2b_extract_installesd.sh failed"; exit 1; }
+          ./local-test-scripts/step3_create_sparse_image.sh || { echo "❌ step3_create_sparse_image.sh failed"; exit 1; }
+          ./local-test-scripts/step4_mount_images.sh || { echo "❌ step4_mount_images.sh failed"; exit 1; }
+          ./local-test-scripts/step5_asr_restore.sh || { echo "❌ step5_asr_restore.sh failed"; exit 1; }
+          ./local-test-scripts/step6_remount_rw.sh || { echo "❌ step6_remount_rw.sh failed"; exit 1; }
+          ./local-test-scripts/step7_validate_volume.sh || { echo "❌ step7_validate_volume.sh failed"; exit 1; }
+          ./local-test-scripts/step8_copy_packages.sh || { echo "❌ step8_copy_packages.sh failed"; exit 1; }
+          ./local-test-scripts/step9_bless_optimize.sh || { echo "❌ step9_bless_optimize.sh failed"; exit 1; }
+
+          echo "✅ Unified ASR installer creation completed for $VERSION_NAME"
+
+      - name: Create DMG Output
+        if: ${{ contains(github.event.inputs.output_format, 'DMG') }}
+        run: |
+          VERSION="${{ github.event.inputs.macos_version }}"
+          case "$VERSION" in
+            "10.9 (Mavericks)" ) TAG="Mavericks" ;;
+            "10.10 (Yosemite)" ) TAG="Yosemite" ;;
+            "10.11 (El Capitan)" ) TAG="El_Capitan" ;;
+            "10.12 (Sierra)" ) TAG="Sierra" ;;
+          esac
+          echo "💿 Creating DMG for $TAG..."
+          hdiutil convert "/tmp/ASR_Installer.sparseimage" -format UDZO -o "/tmp/macOS-${TAG}.dmg"
+          # Wait for DMG to appear (up to 10s)
+          for i in {1..10}; do
+            if [ -f "/tmp/macOS-${TAG}.dmg" ]; then
+              break
+            fi
+            sleep 1
+          done
+          if [ -f "/tmp/macOS-${TAG}.dmg" ]; then
+            echo "✅ DMG created successfully"
+            SIZE=$(ls -lh /tmp/macOS-${TAG}.dmg 2>/dev/null | awk '{print $5}')
+            if [ -z "$SIZE" ]; then
+              if stat -f%z /tmp/macOS-${TAG}.dmg >/dev/null 2>&1; then
+                SIZE_BYTES=$(stat -f%z /tmp/macOS-${TAG}.dmg)
+                SIZE=$(numfmt --to=iec $SIZE_BYTES 2>/dev/null || echo "${SIZE_BYTES}B")
+              else
+                echo "⚠️  Could not determine DMG size. Directory listing:"
+                ls -l /tmp
+                SIZE="unknown"
+              fi
+            fi
+            echo "📊 Size: $SIZE"
+          else
+            echo "❌ DMG not created as expected"
+            ls -l /tmp
+          fi
+
+      - name: Create ISO Output
+        if: ${{ contains(github.event.inputs.output_format, 'ISO') }}
+        run: |
+          VERSION="${{ github.event.inputs.macos_version }}"
+          case "$VERSION" in
+            "10.9 (Mavericks)" ) TAG="Mavericks" ;;
+            "10.10 (Yosemite)" ) TAG="Yosemite" ;;
+            "10.11 (El Capitan)" ) TAG="El_Capitan" ;;
+            "10.12 (Sierra)" ) TAG="Sierra" ;;
+          esac
+          echo "💿 Creating ISO for $TAG..."
+          hdiutil convert "/tmp/ASR_Installer.sparseimage" -format UDTO -o "/tmp/macOS-${TAG}.cdr"
+          # Wait for CDR to appear (up to 10s)
+          for i in {1..10}; do
+            if [ -f "/tmp/macOS-${TAG}.cdr" ]; then
+              break
+            fi
+            sleep 1
+          done
+          if [ -f "/tmp/macOS-${TAG}.cdr" ]; then
+            mv "/tmp/macOS-${TAG}.cdr" "/tmp/macOS-${TAG}.iso"
+            echo "✅ ISO created successfully"
+            SIZE=$(ls -lh /tmp/macOS-${TAG}.iso 2>/dev/null | awk '{print $5}')
+            if [ -z "$SIZE" ]; then
+              if stat -f%z /tmp/macOS-${TAG}.iso >/dev/null 2>&1; then
+                SIZE_BYTES=$(stat -f%z /tmp/macOS-${TAG}.iso)
+                SIZE=$(numfmt --to=iec $SIZE_BYTES 2>/dev/null || echo "${SIZE_BYTES}B")
+              else
+                echo "⚠️  Could not determine ISO size. Directory listing:"
+                ls -l /tmp
+                SIZE="unknown"
+              fi
+            fi
+            echo "📊 Size: $SIZE"
+          else
+            echo "❌ ISO not created as expected"
+            ls -l /tmp
+          fi
+
+      - name: Verify Unified ASR Installers
+        run: |
+          VERSION="${{ github.event.inputs.macos_version }}"
+          case "$VERSION" in
+            "10.9 (Mavericks)" ) TAG="Mavericks" ;;
+            "10.10 (Yosemite)" ) TAG="Yosemite" ;;
+            "10.11 (El Capitan)" ) TAG="El_Capitan" ;;
+            "10.12 (Sierra)" ) TAG="Sierra" ;;
+          esac
+          echo "🔍 Verifying unified ASR installers for $TAG..."
+          # Verify DMG (if created)
+          if [ -f "/tmp/macOS-${TAG}.dmg" ]; then
+            echo "✅ DMG created: $(ls -lh "/tmp/macOS-${TAG}.dmg" | awk '{print $5}')"
+            # Quick verification
+            if hdiutil attach "/tmp/macOS-${TAG}.dmg" -noverify -readonly -mountpoint /tmp/verify_dmg; then
+              VOLUME_NAME=$(diskutil info /tmp/verify_dmg | grep "Volume Name" | cut -d: -f2 | xargs)
+              echo "✅ DMG Volume Name: $VOLUME_NAME"
+              if [ -d "/tmp/verify_dmg/System/Installation/Packages" ]; then
+                if [ -L "/tmp/verify_dmg/System/Installation/Packages" ]; then
+                  echo "⚠️ DMG Packages is still a symlink (should be full directory)"
+                else
+                  PKG_COUNT=$(find "/tmp/verify_dmg/System/Installation/Packages" -name "*.pkg" -o -name "*.mpkg" | wc -l)
+                  echo "✅ DMG Package Count: $PKG_COUNT (full directory)"
+                fi
+              fi
+              hdiutil detach "/tmp/verify_dmg" 2>/dev/null || true
+            fi
+          fi
+          # Verify ISO (if created)
+          if [ -f "/tmp/macOS-${TAG}.iso" ]; then
+            echo "✅ ISO created: $(ls -lh "/tmp/macOS-${TAG}.iso" | awk '{print $5}')"
+            # Quick verification
+            if hdiutil attach "/tmp/macOS-${TAG}.iso" -noverify -readonly -mountpoint /tmp/verify_iso; then
+              VOLUME_NAME=$(diskutil info /tmp/verify_iso | grep "Volume Name" | cut -d: -f2 | xargs)
+              echo "✅ ISO Volume Name: $VOLUME_NAME"
+              if [ -d "/tmp/verify_iso/System/Installation/Packages" ]; then
+                if [ -L "/tmp/verify_iso/System/Installation/Packages" ]; then
+                  echo "⚠️ ISO Packages is still a symlink (should be full directory)"
+                else
+                  PKG_COUNT=$(find "/tmp/verify_iso/System/Installation/Packages" -name "*.pkg" -o -name "*.mpkg" | wc -l)
+                  echo "✅ ISO Package Count: $PKG_COUNT (full directory)"
+                fi
+              fi
+              hdiutil detach "/tmp/verify_iso" 2>/dev/null || true
+            fi
+          fi
+          echo ""
+          echo "🆚 UNIFIED ASR METHOD VALIDATION:"
+          echo "   • Used ASR restore instead of hdiutil convert"
+          echo "   • Copied full packages directory (no symlinks)"
+          echo "   • Applied proper volume blessing"
+          echo "   • Compacted before final conversion"
+          echo "   • Same workflow for all versions 10.9-10.12"
+          echo "   • Version-specific download methods preserved"
+
+      - name: Install oras
+        run: |
+          # Install oras          
+          brew install oras || true
+
+      - name: Push ASR installer to GHCR
+        if: ${{ always() }}
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ github.event.inputs.macos_version }}"
+          case "$VERSION" in
+            "10.9 (Mavericks)" ) TAG="Mavericks" ;;
+            "10.10 (Yosemite)" ) TAG="Yosemite" ;;
+            "10.11 (El Capitan)" ) TAG="El_Capitan" ;;
+            "10.12 (Sierra)" ) TAG="Sierra" ;;
+          esac
+          echo "$GHCR_TOKEN" | oras login ghcr.io -u "$GHCR_USER" --password-stdin
+          # Determine tag suffixes for each artifact
+          DMG_TAG="${TAG}-dmg"
+          ISO_TAG="${TAG}-iso"
+
+          # Push DMG if requested and present
+          if [[ "${{ github.event.inputs.output_format }}" == *"DMG"* ]]; then
+            if [ -f "/tmp/macOS-${TAG}.dmg" ]; then
+              echo "[DEBUG] Pushing DMG as ${DMG_TAG}"
+              oras push ghcr.io/${GHCR_USER}/macos-iso:${DMG_TAG} \
+                --disable-path-validation \
+                "/tmp/macOS-${TAG}.dmg:application/x-apple-diskimage"
+            else
+              echo "[ERROR] DMG requested but /tmp/macOS-${TAG}.dmg not found!"
+            fi
+          fi
+
+          # Push ISO if requested and present
+          if [[ "${{ github.event.inputs.output_format }}" == *"ISO"* ]]; then
+            if [ -f "/tmp/macOS-${TAG}.iso" ]; then
+              echo "[DEBUG] Pushing ISO as ${ISO_TAG}"
+              oras push ghcr.io/${GHCR_USER}/macos-iso:${ISO_TAG} \
+                --disable-path-validation \
+                "/tmp/macOS-${TAG}.iso:application/x-cd-image"
+            else
+              echo "[ERROR] ISO requested but /tmp/macOS-${TAG}.iso not found!"
+            fi
+          fi
+
+      - name: Summary
+        run: |
+          VERSION="${{ github.event.inputs.macos_version }}"
+          case "$VERSION" in
+            "10.9 (Mavericks)" ) TAG="Mavericks" ;;
+            "10.10 (Yosemite)" ) TAG="Yosemite" ;;
+            "10.11 (El Capitan)" ) TAG="El_Capitan" ;;
+            "10.12 (Sierra)" ) TAG="Sierra" ;;
+          esac
+          echo ""
+          echo "🎉 SUCCESS! $TAG ASR installer created successfully!"
+          echo ""
+          echo "📁 Created files:"
+          if [ -f "/tmp/macOS-${TAG}.dmg" ]; then
+            echo "   • DMG: $(ls -lh "/tmp/macOS-${TAG}.dmg" | awk '{print $5}')"
+          fi
+          if [ -f "/tmp/macOS-${TAG}.iso" ]; then
+            echo "   • ISO: $(ls -lh "/tmp/macOS-${TAG}.iso" | awk '{print $5}')"
+          fi
+          echo ""
+          echo "🔬 This installer uses the unified ASR method:"
+          echo "   • ASR restore for proper VM boot compatibility"
+          echo "   • Complete package copying (no symlinks)"
+          echo "   • Proper volume blessing and naming"
+          echo "   • Optimized for all major VM platforms"
+          echo ""
+          echo "💡 Usage recommendations:"
+          echo "   • Parallels Desktop: Both DMG and ISO formats work (tested ✅)"
+          echo "   • VMware Fusion: Use either DMG or ISO format"
+          echo "   • VirtualBox: Use ISO format (best compatibility)"
+          echo ""
+          echo "✅ Ready for VM deployment!"

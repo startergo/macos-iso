@@ -1,0 +1,12 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"type": "shell",
+			"label": "Add and commit Mavericks script changes",
+			"command": "git add local-test-scripts/step2_download_mavericks.sh && git add local-test-scripts && git commit -m \"Update Mavericks download script and ensure script directory is tracked\" && git push",
+			"group": "build",
+			"isBackground": false
+		}
+	]
+}
