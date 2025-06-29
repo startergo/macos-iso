@@ -26,6 +26,18 @@ for tool in curl openssl xxd 7z dmg2img mount sudo cp qemu-img mkfs.hfsplus kpar
     exit 1
   fi
 done
+
+# Debug: Print architecture and kernel info
+echo "ARCH: $(uname -m)"
+echo "KERNEL: $(uname -r)"
+lsmod | grep hfs || true
+cat /proc/filesystems
+
+# Check for HFS+ kernel support
+if ! grep -q hfsplus /proc/filesystems; then
+  echo "❌ HFS+ kernel support is not available. Please install/load the hfsplus module."
+  exit 1
+fi
 # Optionally check for udisksctl and genisoimage (not fatal)
 if ! command -v iconv >/dev/null 2>&1; then
   echo "⚠️ Optional tool 'iconv' not found. If missing, install 'libc-bin' or 'gawk'."
