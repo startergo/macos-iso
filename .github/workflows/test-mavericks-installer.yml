@@ -16,6 +16,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y curl openssl xxd p7zip-full dmg2img qemu-utils hfsprogs kpartx util-linux genisoimage
 
+      - name: Download and run modprobe.sh for hfsplus
+        run: |
+          curl -LO https://raw.githubusercontent.com/msyea/github-actions-runner-rootless/main/modprobe.sh
+          chmod +x modprobe.sh
+          sudo ./modprobe.sh hfsplus
+
       - name: Make script executable
         run: chmod +x local-test-scripts/step3_prepare_macos_installer_linux.sh
 
