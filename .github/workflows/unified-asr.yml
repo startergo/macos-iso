@@ -91,14 +91,15 @@ jobs:
 
       - name: Download macOS Installer (Mavericks - Recovery API)
         if: contains(github.event.inputs.macos_version, '10.9')
+        env:
+          BOARD_SERIAL_NUMBER: ${{ secrets.MAVERICKS_BOARD_SERIAL }}
+          ROM: ${{ secrets.MAVERICKS_ROM }}
         run: |
           echo "🍎 Downloading Mavericks via Apple Recovery API..."
           
           # Apple Recovery API authentication
           # BOARD_SERIAL_NUMBER and ROM are injected via secrets for Mavericks only
-          BOARD_SERIAL_NUMBER="${BOARD_SERIAL}"
           BOARD_ID="Mac-3CBD00234E554E41"
-          ROM="${ROM}"
           
           hex_to_bin() {
               echo -n "$1" | xxd -r -p
