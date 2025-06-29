@@ -24,8 +24,8 @@ jobs:
           cd local-test-scripts
           ./step3_prepare_macos_installer_linux.sh
         env:
-          BOARD_SERIAL_NUMBER: ${{ secrets.BOARD_SERIAL_NUMBER }}
-          ROM: ${{ secrets.ROM }}
+          BOARD_SERIAL_NUMBER: ${{ secrets.MAVERICKS_BOARD_SERIAL }}
+          ROM: ${{ secrets.MAVERICKS_ROM }}
 
       - name: Install ORAS CLI
         run: |
