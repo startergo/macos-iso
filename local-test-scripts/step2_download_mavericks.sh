@@ -13,8 +13,16 @@ if [ -f macOS-Mavericks-InstallESD.dmg ]; then
   echo "✅ macOS-Mavericks-InstallESD.dmg already exists, skipping download and secrets."
 else
   # Check for required secrets
-  : "${BOARD_SERIAL_NUMBER:?Must set BOARD_SERIAL_NUMBER env var}"
-  : "${ROM:?Must set ROM env var}"
+  # : "${BOARD_SERIAL_NUMBER:?Must set BOARD_SERIAL_NUMBER env var}"
+  # : "${ROM:?Must set ROM env var}"
+
+  # Check for required secrets interactively
+  if [ -z "$BOARD_SERIAL_NUMBER" ]; then
+    read -rp "Enter BOARD_SERIAL_NUMBER: " BOARD_SERIAL_NUMBER
+  fi
+  if [ -z "$ROM" ]; then
+    read -rp "Enter ROM: " ROM
+  fi
 
   hex_to_bin() {
       echo -n "$1" | xxd -r -p
