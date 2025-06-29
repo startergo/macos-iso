@@ -206,7 +206,8 @@ if [ ! -f BaseSystem.full.img ]; then
         for PARTDEV in "${PARTDEVS[@]}"; do
           echo "[INFO] Partition $PARTDEV type: $(sudo blkid "$PARTDEV" || file -s "$PARTDEV")"
           sudo mkdir -p /mnt/basesystem-orig-tmp
-          if sudo mount "$PARTDEV" /mnt/basesystem-orig-tmp 2>/dev/null; then
+          # Try mounting with and without -t hfsplus, print error output
+          if sudo mount "$PARTDEV" /mnt/basesystem-orig-tmp 2>&1; then
             echo "[SUCCESS] Mounted $PARTDEV at /mnt/basesystem-orig-tmp."
             # Check for expected files
             if [ -e /mnt/basesystem-orig-tmp/System/Installation ]; then
@@ -221,7 +222,24 @@ if [ ! -f BaseSystem.full.img ]; then
               sudo umount /mnt/basesystem-orig-tmp
             fi
           else
-            echo "[INFO] Could not mount $PARTDEV."
+            echo "[INFO] Could not mount $PARTDEV with default mount. Trying -t hfsplus..."
+            if sudo mount -t hfsplus "$PARTDEV" /mnt/basesystem-orig-tmp 2>&1; then
+              echo "[SUCCESS] Mounted $PARTDEV at /mnt/basesystem-orig-tmp with -t hfsplus."
+              # Check for expected files
+              if [ -e /mnt/basesystem-orig-tmp/System/Installation ]; then
+                echo "[INFO] Found expected installer structure in $PARTDEV. Using this partition."
+                PARTITION_SUMMARY="Mounted $PARTDEV (HFS+) containing installer."
+                sudo umount /mnt/basesystem-orig-tmp
+                sudo mount "$PARTDEV" /mnt/basesystem-orig
+                KPARTX_MOUNTED=1
+                break
+              else
+                echo "[INFO] $PARTDEV does not contain expected files."
+                sudo umount /mnt/basesystem-orig-tmp
+              fi
+            else
+              echo "[INFO] Could not mount $PARTDEV with -t hfsplus."
+            fi
           fi
         done
         sudo rmdir /mnt/basesystem-orig-tmp
