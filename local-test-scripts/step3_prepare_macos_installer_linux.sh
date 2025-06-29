@@ -4,7 +4,7 @@ set -x
 # Script: mavericks_full_installer_linux.sh
 # Purpose: Download and prepare a full-size macOS Mavericks installer image from Apple Recovery API on Linux/WSL/Cygwin
 # Combines: Download, verify, extract, expand, patch, and optional ISO creation
-# Requires: curl, openssl, xxd, iconv, od, 7z, dmg2img, mount, sudo, cp, qemu-img, mkfs.hfsplus, kpartx, blkid, fdisk
+# Requires: curl, openssl, xxd, 7z, dmg2img, mount, sudo, cp, qemu-img, mkfs.hfsplus, kpartx, blkid, fdisk
 # Optional: udisksctl (for fallback mounting), genisoimage (for ISO creation)
 #
 # WARNING: The Linux HFS+ driver is known to be unstable and will crash (kernel Oops) on ARM platforms (including Parallels VMs on Apple Silicon) during the copy step.
@@ -20,13 +20,19 @@ if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ] || [ "$ARCH" = "armv7l" ]; t
 fi
 
 # Check for required tools
-for tool in curl openssl xxd iconv od 7z dmg2img mount sudo cp qemu-img mkfs.hfsplus kpartx blkid fdisk; do
+for tool in curl openssl xxd 7z dmg2img mount sudo cp qemu-img mkfs.hfsplus kpartx blkid fdisk; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "❌ Required tool '$tool' not found. Please install it."
     exit 1
   fi
 done
 # Optionally check for udisksctl and genisoimage (not fatal)
+if ! command -v iconv >/dev/null 2>&1; then
+  echo "⚠️ Optional tool 'iconv' not found. If missing, install 'libc-bin' or 'gawk'."
+fi
+if ! command -v od >/dev/null 2>&1; then
+  echo "⚠️ Optional tool 'od' not found. If missing, install 'coreutils'."
+fi
 if ! command -v udisksctl >/dev/null 2>&1; then
   echo "⚠️ Optional tool 'udisksctl' not found. Some fallback mounting strategies may not be available."
 fi

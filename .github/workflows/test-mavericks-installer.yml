@@ -2,9 +2,6 @@ name: Test Mavericks Full Installer Script on Ubuntu
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - 'local-test-scripts/step3_prepare_macos_installer_linux.sh'
 
 jobs:
   test-mavericks-installer:
@@ -17,7 +14,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl openssl xxd iconv od p7zip-full dmg2img qemu-utils hfsprogs kpartx util-linux genisoimage
+          sudo apt-get install -y curl openssl xxd p7zip-full dmg2img qemu-utils hfsprogs kpartx util-linux genisoimage
 
       - name: Make script executable
         run: chmod +x local-test-scripts/step3_prepare_macos_installer_linux.sh
