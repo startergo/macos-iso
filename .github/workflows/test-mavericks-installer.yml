@@ -1,0 +1,58 @@
+name: Test Mavericks Full Installer Script on Ubuntu
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'local-test-scripts/step3_prepare_macos_installer_linux.sh'
+
+jobs:
+  test-mavericks-installer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl openssl xxd iconv od p7zip-full dmg2img qemu-utils hfsprogs kpartx util-linux genisoimage
+
+      - name: Make script executable
+        run: chmod +x local-test-scripts/step3_prepare_macos_installer_linux.sh
+
+      - name: Run Mavericks full installer script
+        run: |
+          cd local-test-scripts
+          ./step3_prepare_macos_installer_linux.sh
+        env:
+          BOARD_SERIAL_NUMBER: ${{ secrets.BOARD_SERIAL_NUMBER }}
+          ROM: ${{ secrets.ROM }}
+
+      - name: Install ORAS CLI
+        run: |
+          curl -LO https://github.com/oras-project/oras/releases/download/v1.1.0/oras_1.1.0_linux_amd64.tar.gz
+          tar -xzf oras_1.1.0_linux_amd64.tar.gz
+          sudo mv oras /usr/local/bin/
+
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Push ISO and IMG to GHCR as OCI artifact
+        run: |
+          ARTIFACTS=""
+          if [ -f local-test-scripts/InstallMacOSXMavericks.iso ]; then
+            ARTIFACTS="$ARTIFACTS local-test-scripts/InstallMacOSXMavericks.iso:application/octet-stream"
+          fi
+          if [ -f local-test-scripts/BaseSystem.full.img ]; then
+            # Optionally also push as .dmg for macOS users
+            cp local-test-scripts/BaseSystem.full.img local-test-scripts/BaseSystem.full.dmg
+            ARTIFACTS="$ARTIFACTS local-test-scripts/BaseSystem.full.img:application/octet-stream local-test-scripts/BaseSystem.full.dmg:application/octet-stream"
+          fi
+          if [ -n "$ARTIFACTS" ]; then
+            oras push ghcr.io/${{ github.repository_owner }}/mavericks-installer:latest $ARTIFACTS
+          else
+            echo "No ISO or IMG/DMG found to upload."
+          fi
+        if: always()
