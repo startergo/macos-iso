@@ -46,6 +46,16 @@ TMPDIR="${TMPDIR:-/tmp}"
 
 BOARD_ID="Mac-3CBD00234E554E41"
 
+# Fail fast if secrets are missing, with a CI-friendly message
+if [ ! -f macOS-Mavericks-InstallESD.dmg ]; then
+  if [ -z "$BOARD_SERIAL_NUMBER" ] || [ -z "$ROM" ]; then
+    echo "❌ ERROR: Required secrets BOARD_SERIAL_NUMBER and/or ROM are not set."
+    echo "   This script must be run with BOARD_SERIAL_NUMBER and ROM set as environment variables (e.g., via CI secrets)."
+    echo "   Example: BOARD_SERIAL_NUMBER=XXXX ROM=YYYY ./step3_prepare_macos_installer_linux.sh"
+    echo "   Aborting."
+    exit 1
+  fi
+fi
 
 if [ -f macOS-Mavericks-InstallESD.dmg ]; then
   echo "✅ macOS-Mavericks-InstallESD.dmg already exists, skipping download and secrets."
@@ -118,6 +128,7 @@ if [ "$ACTUAL_CHECKSUM" != "$EXPECTED_CHECKSUM" ]; then
 fi
 echo "✅ InstallESD.dmg downloaded and verified ($(ls -lh macOS-Mavericks-InstallESD.dmg | awk '{print $5}'))"
 cp macOS-Mavericks-InstallESD.dmg InstallESD.dmg
+INSTALL_ESD_DMG="InstallESD.dmg"
 
 # Extract BaseSystem.dmg and Packages if not present
 if [ ! -f BaseSystem.dmg ]; then
