@@ -43,7 +43,7 @@ diskutil info "$SPARSE_DEV" || true
 
 diskutil unmount "$TARGET_MOUNT"
 asr restore --source "$BASESYSTEM_MOUNT" --target "$SPARSE_DEV" --erase --noprompt --noverify
-hdiutil attach "$SPARSE_IMG" -mountpoint "$TARGET_MOUNT"
+hdiutil attach -debug "$SPARSE_IMG" -mountpoint "$TARGET_MOUNT"
 
 # After ASR restore: print filesystem info
 echo "[DEBUG] Filesystem info AFTER ASR restore:"
