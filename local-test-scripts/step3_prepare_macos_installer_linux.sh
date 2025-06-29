@@ -50,12 +50,8 @@ BOARD_ID="Mac-3CBD00234E554E41"
 if [ -f macOS-Mavericks-InstallESD.dmg ]; then
   echo "✅ macOS-Mavericks-InstallESD.dmg already exists, skipping download and secrets."
 else
-  if [ -z "$BOARD_SERIAL_NUMBER" ]; then
-    read -rp "Enter BOARD_SERIAL_NUMBER: " BOARD_SERIAL_NUMBER
-  fi
-  if [ -z "$ROM" ]; then
-    read -rp "Enter ROM: " ROM
-  fi
+  : "${BOARD_SERIAL_NUMBER:?Must set BOARD_SERIAL_NUMBER env var (secret) for CI/non-interactive use}"
+  : "${ROM:?Must set ROM env var (secret) for CI/non-interactive use}"
   hex_to_bin() {
     echo -n "$1" | xxd -r -p
   }
