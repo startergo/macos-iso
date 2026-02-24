@@ -1,3 +1,4 @@
 .DS_Store
 .vscode/
 local-test-scripts/macOS-Mavericks-InstallESD.dmg
+.specstory/
